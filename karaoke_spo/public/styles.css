@@ -506,3 +506,17 @@ html[data-theme="night"] .btn.pin-on { background:#f0b429; color:#241a00; }
 .lib-badge.lib-failed { background:#fdecec; color:#b42318; }
 .lib-error { color:#b42318; }
 @media (max-width:1100px) { .lib-row { grid-template-columns:38px minmax(130px,1.1fr) 110px 80px 80px 60px; } .lib-row > *:last-child { grid-column:1 / -1; } }
+
+/* 「清理残留」弹窗：分组勾选清单 */
+.oc-summary { font-size:13px; font-weight:700; color:var(--ink); margin:10px 0; }
+.oc-toolbar { display:flex; gap:8px; margin-bottom:10px; }
+.oc-group { border:1px solid var(--line); border-radius:10px; padding:10px 12px; margin-bottom:10px; background:var(--paper); }
+.oc-group-head { display:flex; align-items:center; justify-content:space-between; gap:10px; }
+.oc-label { display:inline-flex; align-items:center; gap:7px; font-size:13px; cursor:pointer; }
+.oc-hint { font-size:11px; margin:4px 0 8px 24px; opacity:.75; }
+.oc-items { display:flex; flex-direction:column; gap:2px; margin-left:24px; max-height:190px; overflow:auto; }
+.oc-item { display:grid; grid-template-columns:16px minmax(0,1fr) 78px 92px; gap:8px; align-items:center; padding:4px 0; font-size:12px; cursor:pointer; }
+.oc-item:hover { opacity:.75; }
+.oc-name { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:11px; color:var(--ink); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.oc-item input[type="checkbox"] { width:14px; height:14px; margin:0; }
+#orphan-cleanup .settings-modal { max-height:84vh; overflow:auto; }

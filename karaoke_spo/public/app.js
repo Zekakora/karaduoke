@@ -172,9 +172,9 @@ Object.assign(commonI18n.de, { eventName:'Eventname', standby:'Standby', transit
 // ---------------------------------------------------------------- 曲库管理页文案
 // 原先这里是一个独立的 libraryI18n 字典；为了不让 i18n 出现两套机制，
 // 已把这些 key 并入 commonI18n（localeText 读的那份），libraryText 只作兼容包装。
-Object.assign(commonI18n.zh, { libEyebrow:'LIBRARY · 模式 B', libIntro:'所有曲目的处理状态、耗时、文件大小与匹配分。点歌触发的下载与分离会在这里实时显示阶段。', libLoading:'正在读取曲库…', libOpenDisplay:'打开大屏 ↗', libRematchTitle:'重新匹配歌词', libClose:'关闭', libTrackTitle:'歌名', libTrackArtist:'歌手', libArtistsHint:'多个歌手用逗号分隔', libRematchHint:'改动只影响歌词搜索，不会改曲库里的曲目信息。', libRematchSearch:'搜索歌词', libCancel:'取消', libTitleRequired:'歌名不能为空', libSearchingLyrics:'搜索中…', libMatched:'✅ 匹配成功：{provider} · {kind} · {lines} 行', libLyricsUpdated:'歌词已更新，播放时立即生效', libNoLyricsFound:'❌ 没搜到歌词。试试把歌名改得更短、或换一种写法（比如去掉括号里的后缀）。', libRematchFailed:'❌ 失败：{error}', libUnknownError:'未知错误', libNoLyrics:'无歌词', libWordLevel:'逐字', libLineLevel:'行级', libPlainText:'纯文本', libStatusProcessed:'已处理', libStatusProcessing:'处理中', libStatusPending:'待处理', libStatusFailed:'处理失败', libStatusCanceled:'已取消', libQueued:'排队中', libUnavailable:'曲库不可用：', libHeading:'曲库管理', libDesc:'每首歌的处理状态、耗时、文件大小与匹配分。点歌触发的下载/分离会在这里显示实时阶段。', libSummary:'{total} 首 · 已处理 {processed} · 处理中 {processing} · 待处理 {pending} · 失败 {failed}', libFilterPlaceholder:'按歌名 / 歌手 / 专辑筛选', libRefresh:'刷新', libColTrack:'曲目', libColStatus:'状态', libColLyrics:'歌词', libColDuration:'耗时', libColSize:'大小', libColMatch:'匹配分', libColActions:'操作', libErrorReason:'原因：', libStop:'停止', libStopTitle:'中止后台制作（仅 DJ）', libRematchShort:'改词重搜', libRematchShortTitle:'改歌名/歌手后重新搜歌词', libDelete:'删除', libDeleteTitle:'从曲库删除（含产物文件）', libEmpty:'没有匹配的曲目', libDeleteConfirm:'从曲库删除「{title}」？会同时删除成品音频、视频、封面、歌词和原始下载文件。', libDeleted:'已删除', libDeleteOutdated:'服务端版本过旧，请重启服务后再试', libAbortConfirm:'中止这个后台制作任务？已生成的中间产物会保留，下次点歌会继续跑。', libAborted:'已中止', qrAlt: '点歌二维码', liveMessage: '现场消息', videoLyricsOn: '视频歌词：开', videoLyricsOff: '视频歌词：关', wordLevelTitle: '当前行按字逐个点亮', wordLevelUnavailable: '这首歌的歌词没有逐字数据（只有行级时间轴），切到逐字也不会有变化' });
-Object.assign(commonI18n.en, { libEyebrow:'LIBRARY · MODE B', libIntro:'Processing status, processing time, file size, and match score for every track. Downloads and separations triggered by song requests update here in real time.', libLoading:'Loading library…', libOpenDisplay:'Open Display ↗', libRematchTitle:'Re-match Lyrics', libClose:'Close', libTrackTitle:'Song title', libTrackArtist:'Artist', libArtistsHint:'Separate multiple artists with commas', libRematchHint:'Only the lyrics search changes; the track details in the library stay as they are.', libRematchSearch:'Search Lyrics', libCancel:'Cancel', libTitleRequired:'Please enter a song title', libSearchingLyrics:'Searching…', libMatched:'✅ Match found: {provider} · {kind} · {lines} lines', libLyricsUpdated:'Lyrics updated and active for the next playback', libNoLyricsFound:'❌ No lyrics found. Try a shorter song title or a different spelling (for example, drop the text in brackets).', libRematchFailed:'❌ Failed: {error}', libUnknownError:'unknown error', libNoLyrics:'No lyrics', libWordLevel:'Word-level', libLineLevel:'Line-level', libPlainText:'Plain text', libStatusProcessed:'Processed', libStatusProcessing:'Processing', libStatusPending:'Pending', libStatusFailed:'Failed', libStatusCanceled:'Canceled', libQueued:'Queued', libUnavailable:'Library unavailable: ', libHeading:'Library Management', libDesc:'Processing status, processing time, file size, and match score for every song. Downloads and separations from song requests show their live stage here.', libSummary:'{total} tracks · Processed {processed} · Processing {processing} · Pending {pending} · Failed {failed}', libFilterPlaceholder:'Filter by title / artist / album', libRefresh:'Refresh', libColTrack:'Track', libColStatus:'Status', libColLyrics:'Lyrics', libColDuration:'Time', libColSize:'Size', libColMatch:'Match', libColActions:'Actions', libErrorReason:'Reason: ', libStop:'Stop', libStopTitle:'Cancel background processing (DJ only)', libRematchShort:'Re-search', libRematchShortTitle:'Edit title or artist and search for lyrics again', libDelete:'Delete', libDeleteTitle:'Delete from library (including generated files)', libEmpty:'No matching tracks', libDeleteConfirm:'Delete “{title}” from the library? This also removes the finished audio, video, cover, lyrics, and source download.', libDeleted:'Deleted', libDeleteOutdated:'The server is running an older version. Please restart the service and try again.', libAbortConfirm:'Cancel this background processing job? Intermediate files are kept and processing resumes the next time the song is requested.', libAborted:'Stopped', qrAlt: 'QR code to choose a song', liveMessage: 'Live message', videoLyricsOn: 'Video lyrics: on', videoLyricsOff: 'Video lyrics: off', wordLevelTitle: 'Current line lights up word by word', wordLevelUnavailable: 'This song has no word-level lyrics (line timing only), so word mode will look the same' });
-Object.assign(commonI18n.de, { libEyebrow:'BIBLIOTHEK · MODUS B', libIntro:'Verarbeitungsstatus, Dauer, Dateigröße und Match-Score aller Titel. Durch Songwünsche ausgelöste Downloads und Trennungen zeigen hier live ihren Fortschritt.', libLoading:'Bibliothek wird geladen…', libOpenDisplay:'Anzeige öffnen ↗', libRematchTitle:'Songtext neu zuordnen', libClose:'Schließen', libTrackTitle:'Songtitel', libTrackArtist:'Interpret', libArtistsHint:'Mehrere Interpreten mit Kommas trennen', libRematchHint:'Änderungen betreffen nur die Songtextsuche, nicht die Angaben in der Bibliothek.', libRematchSearch:'Songtext suchen', libCancel:'Abbrechen', libTitleRequired:'Bitte einen Songtitel eingeben', libSearchingLyrics:'Suche läuft…', libMatched:'✅ Treffer: {provider} · {kind} · {lines} Zeilen', libLyricsUpdated:'Songtext aktualisiert und bei der nächsten Wiedergabe aktiv', libNoLyricsFound:'❌ Kein Songtext gefunden. Versuche einen kürzeren Titel oder eine andere Schreibweise (z. B. ohne Zusatz in Klammern).', libRematchFailed:'❌ Fehlgeschlagen: {error}', libUnknownError:'unbekannter Fehler', libNoLyrics:'Kein Songtext', libWordLevel:'Wortgenau', libLineLevel:'Zeilenweise', libPlainText:'Nur Text', libStatusProcessed:'Verarbeitet', libStatusProcessing:'In Verarbeitung', libStatusPending:'Ausstehend', libStatusFailed:'Fehlgeschlagen', libStatusCanceled:'Abgebrochen', libQueued:'In Warteschlange', libUnavailable:'Bibliothek nicht verfügbar: ', libHeading:'Bibliotheksverwaltung', libDesc:'Verarbeitungsstatus, Dauer, Dateigröße und Match-Score aller Songs. Durch Songwünsche ausgelöste Downloads und Trennungen zeigen hier live ihren Fortschritt.', libSummary:'{total} Titel · Verarbeitet {processed} · In Verarbeitung {processing} · Ausstehend {pending} · Fehlgeschlagen {failed}', libFilterPlaceholder:'Nach Titel / Interpret / Album filtern', libRefresh:'Aktualisieren', libColTrack:'Titel', libColStatus:'Status', libColLyrics:'Songtext', libColDuration:'Dauer', libColSize:'Größe', libColMatch:'Match', libColActions:'Aktionen', libErrorReason:'Grund: ', libStop:'Stoppen', libStopTitle:'Hintergrundverarbeitung abbrechen (nur DJ)', libRematchShort:'Neu suchen', libRematchShortTitle:'Titel oder Interpret ändern und Songtext erneut suchen', libDelete:'Löschen', libDeleteTitle:'Aus der Bibliothek löschen (inklusive erzeugter Dateien)', libEmpty:'Keine passenden Titel', libDeleteConfirm:'„{title}“ aus der Bibliothek löschen? Dabei werden fertige Audiodateien, Video, Cover, Songtext und der Quelldownload entfernt.', libDeleted:'Gelöscht', libDeleteOutdated:'Der Server läuft mit einer älteren Version. Bitte den Dienst neu starten und erneut versuchen.', libAbortConfirm:'Diesen Hintergrundauftrag abbrechen? Bereits erzeugte Zwischendateien bleiben erhalten, bei der nächsten Anforderung geht es weiter.', libAborted:'Abgebrochen', qrAlt: 'QR-Code zum Songaussuchen', liveMessage: 'Live-Durchsage', videoLyricsOn: 'Songtext im Video: an', videoLyricsOff: 'Songtext im Video: aus', wordLevelTitle: 'Aktuelle Zeile leuchtet Wort für Wort auf', wordLevelUnavailable: 'Für diesen Song gibt es keinen wortgenauen Songtext (nur Zeilentiming) – der Wortmodus sieht daher gleich aus' });
+Object.assign(commonI18n.zh, { libEyebrow:'LIBRARY · 模式 B', libIntro:'所有曲目的处理状态、耗时、文件大小与匹配分。点歌触发的下载与分离会在这里实时显示阶段。', libLoading:'正在读取曲库…', libOpenDisplay:'打开大屏 ↗', libRematchTitle:'重新匹配歌词', libClose:'关闭', libTrackTitle:'歌名', libTrackArtist:'歌手', libArtistsHint:'多个歌手用逗号分隔', libRematchHint:'改动只影响歌词搜索，不会改曲库里的曲目信息。', libRematchSearch:'搜索歌词', libCancel:'取消', libTitleRequired:'歌名不能为空', libSearchingLyrics:'搜索中…', libMatched:'✅ 匹配成功：{provider} · {kind} · {lines} 行', libLyricsUpdated:'歌词已更新，播放时立即生效', libNoLyricsFound:'❌ 没搜到歌词。试试把歌名改得更短、或换一种写法（比如去掉括号里的后缀）。', libRematchFailed:'❌ 失败：{error}', libUnknownError:'未知错误', libNoLyrics:'无歌词', libWordLevel:'逐字', libLineLevel:'行级', libPlainText:'纯文本', libStatusProcessed:'已处理', libStatusProcessing:'处理中', libStatusPending:'待处理', libStatusFailed:'处理失败', libStatusCanceled:'已取消', libQueued:'排队中', libUnavailable:'曲库不可用：', libHeading:'曲库管理', libDesc:'每首歌的处理状态、耗时、文件大小与匹配分。点歌触发的下载/分离会在这里显示实时阶段。', libSummary:'{total} 首 · 已处理 {processed} · 处理中 {processing} · 待处理 {pending} · 失败 {failed}', libFilterPlaceholder:'按歌名 / 歌手 / 专辑筛选', libRefresh:'刷新', libColTrack:'曲目', libColStatus:'状态', libColLyrics:'歌词', libColDuration:'耗时', libColSize:'大小', libColMatch:'匹配分', libColActions:'操作', libErrorReason:'原因：', libStop:'停止', libStopTitle:'中止后台制作（仅 DJ）', libRematchShort:'改词重搜', libRematchShortTitle:'改歌名/歌手后重新搜歌词', libDelete:'删除', libDeleteTitle:'从曲库删除（含产物文件）', libEmpty:'没有匹配的曲目', libDeleteConfirm:'从曲库删除「{title}」？会同时删除成品音频、视频、封面、歌词和原始下载文件。', libDeleted:'已删除', libDeleteOutdated:'服务端版本过旧，请重启服务后再试', libAbortConfirm:'中止这个后台制作任务？已生成的中间产物会保留，下次点歌会继续跑。', libAborted:'已中止', qrAlt: '点歌二维码', liveMessage: '现场消息', videoLyricsOn: '视频歌词：开', videoLyricsOff: '视频歌词：关', wordLevelTitle: '当前行按字逐个点亮', wordLevelUnavailable: '这首歌的歌词没有逐字数据（只有行级时间轴），切到逐字也不会有变化', libCleanup:'清理残留', libCleanupTitle:'清理残留文件', libCleanupDesc:'扫描曲库，找出已删除歌曲遗留的产物文件', libScanning:'扫描中…', libCleanupEmpty:'没有发现残留文件，曲库是干净的', libCleanupSummary:'发现 {count} 项残留，共 {size}', libCleanupHint:'只列出数据库里已无对应记录的产物。正在制作的歌曲不会出现在这里。', libCleanupSelectAll:'全选', libCleanupDeselectAll:'全不选', libCleanupConfirm:'确定删除选中的 {count} 项？共 {size}，删除后不可恢复。', libCleanupRunning:'清理中…', libCleanupDone:'已清理 {count} 项，释放 {size}', libCleanupPartial:'清理完成：成功 {removed} 项，跳过 {skipped} 项，失败 {failed} 项', libCleanupManifest:'删除清单已保存到 data/ 目录', libScanFailed:'扫描失败：{error}', libCleanupFailed:'清理失败：{error}', libGroupOutput:'成品音频 / 视频', libGroupCovers:'封面', libGroupLyrics:'歌词文件', libGroupUpstream:'原始下载', libGroupOverrides:'歌词覆盖', libCleanupActive:'有 {count} 首歌正在制作，其产物已自动排除', libCleanupGroupItems:'{count} 项 · {size}' });
+Object.assign(commonI18n.en, { libEyebrow:'LIBRARY · MODE B', libIntro:'Processing status, processing time, file size, and match score for every track. Downloads and separations triggered by song requests update here in real time.', libLoading:'Loading library…', libOpenDisplay:'Open Display ↗', libRematchTitle:'Re-match Lyrics', libClose:'Close', libTrackTitle:'Song title', libTrackArtist:'Artist', libArtistsHint:'Separate multiple artists with commas', libRematchHint:'Only the lyrics search changes; the track details in the library stay as they are.', libRematchSearch:'Search Lyrics', libCancel:'Cancel', libTitleRequired:'Please enter a song title', libSearchingLyrics:'Searching…', libMatched:'✅ Match found: {provider} · {kind} · {lines} lines', libLyricsUpdated:'Lyrics updated and active for the next playback', libNoLyricsFound:'❌ No lyrics found. Try a shorter song title or a different spelling (for example, drop the text in brackets).', libRematchFailed:'❌ Failed: {error}', libUnknownError:'unknown error', libNoLyrics:'No lyrics', libWordLevel:'Word-level', libLineLevel:'Line-level', libPlainText:'Plain text', libStatusProcessed:'Processed', libStatusProcessing:'Processing', libStatusPending:'Pending', libStatusFailed:'Failed', libStatusCanceled:'Canceled', libQueued:'Queued', libUnavailable:'Library unavailable: ', libHeading:'Library Management', libDesc:'Processing status, processing time, file size, and match score for every song. Downloads and separations from song requests show their live stage here.', libSummary:'{total} tracks · Processed {processed} · Processing {processing} · Pending {pending} · Failed {failed}', libFilterPlaceholder:'Filter by title / artist / album', libRefresh:'Refresh', libColTrack:'Track', libColStatus:'Status', libColLyrics:'Lyrics', libColDuration:'Time', libColSize:'Size', libColMatch:'Match', libColActions:'Actions', libErrorReason:'Reason: ', libStop:'Stop', libStopTitle:'Cancel background processing (DJ only)', libRematchShort:'Re-search', libRematchShortTitle:'Edit title or artist and search for lyrics again', libDelete:'Delete', libDeleteTitle:'Delete from library (including generated files)', libEmpty:'No matching tracks', libDeleteConfirm:'Delete “{title}” from the library? This also removes the finished audio, video, cover, lyrics, and source download.', libDeleted:'Deleted', libDeleteOutdated:'The server is running an older version. Please restart the service and try again.', libAbortConfirm:'Cancel this background processing job? Intermediate files are kept and processing resumes the next time the song is requested.', libAborted:'Stopped', qrAlt: 'QR code to choose a song', liveMessage: 'Live message', videoLyricsOn: 'Video lyrics: on', videoLyricsOff: 'Video lyrics: off', wordLevelTitle: 'Current line lights up word by word', wordLevelUnavailable: 'This song has no word-level lyrics (line timing only), so word mode will look the same', libCleanup:'Clean leftovers', libCleanupTitle:'Clean up leftover files', libCleanupDesc:'Scan the library for files left behind by deleted songs', libScanning:'Scanning…', libCleanupEmpty:'No leftover files found — the library is clean', libCleanupSummary:'Found {count} leftover items, {size} in total', libCleanupHint:'Only files with no matching database record are listed. Songs currently being processed never appear here.', libCleanupSelectAll:'Select all', libCleanupDeselectAll:'Deselect all', libCleanupConfirm:'Delete the selected {count} items? {size} in total. This cannot be undone.', libCleanupRunning:'Cleaning…', libCleanupDone:'Removed {count} items, freed {size}', libCleanupPartial:'Done: {removed} removed, {skipped} skipped, {failed} failed', libCleanupManifest:'A manifest of deleted files was saved under data/', libScanFailed:'Scan failed: {error}', libCleanupFailed:'Cleanup failed: {error}', libGroupOutput:'Audio / video output', libGroupCovers:'Cover art', libGroupLyrics:'Lyrics files', libGroupUpstream:'Raw downloads', libGroupOverrides:'Lyrics overrides', libCleanupActive:'{count} song(s) are being processed — their files are excluded', libCleanupGroupItems:'{count} items · {size}' });
+Object.assign(commonI18n.de, { libEyebrow:'BIBLIOTHEK · MODUS B', libIntro:'Verarbeitungsstatus, Dauer, Dateigröße und Match-Score aller Titel. Durch Songwünsche ausgelöste Downloads und Trennungen zeigen hier live ihren Fortschritt.', libLoading:'Bibliothek wird geladen…', libOpenDisplay:'Anzeige öffnen ↗', libRematchTitle:'Songtext neu zuordnen', libClose:'Schließen', libTrackTitle:'Songtitel', libTrackArtist:'Interpret', libArtistsHint:'Mehrere Interpreten mit Kommas trennen', libRematchHint:'Änderungen betreffen nur die Songtextsuche, nicht die Angaben in der Bibliothek.', libRematchSearch:'Songtext suchen', libCancel:'Abbrechen', libTitleRequired:'Bitte einen Songtitel eingeben', libSearchingLyrics:'Suche läuft…', libMatched:'✅ Treffer: {provider} · {kind} · {lines} Zeilen', libLyricsUpdated:'Songtext aktualisiert und bei der nächsten Wiedergabe aktiv', libNoLyricsFound:'❌ Kein Songtext gefunden. Versuche einen kürzeren Titel oder eine andere Schreibweise (z. B. ohne Zusatz in Klammern).', libRematchFailed:'❌ Fehlgeschlagen: {error}', libUnknownError:'unbekannter Fehler', libNoLyrics:'Kein Songtext', libWordLevel:'Wortgenau', libLineLevel:'Zeilenweise', libPlainText:'Nur Text', libStatusProcessed:'Verarbeitet', libStatusProcessing:'In Verarbeitung', libStatusPending:'Ausstehend', libStatusFailed:'Fehlgeschlagen', libStatusCanceled:'Abgebrochen', libQueued:'In Warteschlange', libUnavailable:'Bibliothek nicht verfügbar: ', libHeading:'Bibliotheksverwaltung', libDesc:'Verarbeitungsstatus, Dauer, Dateigröße und Match-Score aller Songs. Durch Songwünsche ausgelöste Downloads und Trennungen zeigen hier live ihren Fortschritt.', libSummary:'{total} Titel · Verarbeitet {processed} · In Verarbeitung {processing} · Ausstehend {pending} · Fehlgeschlagen {failed}', libFilterPlaceholder:'Nach Titel / Interpret / Album filtern', libRefresh:'Aktualisieren', libColTrack:'Titel', libColStatus:'Status', libColLyrics:'Songtext', libColDuration:'Dauer', libColSize:'Größe', libColMatch:'Match', libColActions:'Aktionen', libErrorReason:'Grund: ', libStop:'Stoppen', libStopTitle:'Hintergrundverarbeitung abbrechen (nur DJ)', libRematchShort:'Neu suchen', libRematchShortTitle:'Titel oder Interpret ändern und Songtext erneut suchen', libDelete:'Löschen', libDeleteTitle:'Aus der Bibliothek löschen (inklusive erzeugter Dateien)', libEmpty:'Keine passenden Titel', libDeleteConfirm:'„{title}“ aus der Bibliothek löschen? Dabei werden fertige Audiodateien, Video, Cover, Songtext und der Quelldownload entfernt.', libDeleted:'Gelöscht', libDeleteOutdated:'Der Server läuft mit einer älteren Version. Bitte den Dienst neu starten und erneut versuchen.', libAbortConfirm:'Diesen Hintergrundauftrag abbrechen? Bereits erzeugte Zwischendateien bleiben erhalten, bei der nächsten Anforderung geht es weiter.', libAborted:'Abgebrochen', qrAlt: 'QR-Code zum Songaussuchen', liveMessage: 'Live-Durchsage', videoLyricsOn: 'Songtext im Video: an', videoLyricsOff: 'Songtext im Video: aus', wordLevelTitle: 'Aktuelle Zeile leuchtet Wort für Wort auf', wordLevelUnavailable: 'Für diesen Song gibt es keinen wortgenauen Songtext (nur Zeilentiming) – der Wortmodus sieht daher gleich aus', libCleanup:'Reste aufräumen', libCleanupTitle:'Übrig gebliebene Dateien aufräumen', libCleanupDesc:'Bibliothek nach Dateien durchsuchen, die von gelöschten Songs übrig geblieben sind', libScanning:'Suche läuft…', libCleanupEmpty:'Keine Reste gefunden – die Bibliothek ist sauber', libCleanupSummary:'{count} Reste gefunden, insgesamt {size}', libCleanupHint:'Es werden nur Dateien ohne passenden Datenbankeintrag aufgelistet. Songs in Bearbeitung erscheinen hier nie.', libCleanupSelectAll:'Alle auswählen', libCleanupDeselectAll:'Alle abwählen', libCleanupConfirm:'Die ausgewählten {count} Einträge löschen? Insgesamt {size}. Das kann nicht rückgängig gemacht werden.', libCleanupRunning:'Aufräumen…', libCleanupDone:'{count} Einträge entfernt, {size} freigegeben', libCleanupPartial:'Fertig: {removed} entfernt, {skipped} übersprungen, {failed} fehlgeschlagen', libCleanupManifest:'Eine Liste der gelöschten Dateien wurde unter data/ gespeichert', libScanFailed:'Suche fehlgeschlagen: {error}', libCleanupFailed:'Aufräumen fehlgeschlagen: {error}', libGroupOutput:'Audio- / Videoausgabe', libGroupCovers:'Cover', libGroupLyrics:'Songtext-Dateien', libGroupUpstream:'Rohdaten', libGroupOverrides:'Songtext-Überschreibungen', libCleanupActive:'{count} Song(s) werden gerade verarbeitet – ihre Dateien sind ausgeschlossen', libCleanupGroupItems:'{count} Einträge · {size}' });
 // 曲库文案查找：优先本页字典，缺 key 回退到 commonI18n（localeText 读的那份）。
 function libraryText(key, fallback = '') {
   // key 已并入 commonI18n，直接复用 localeText；保留此包装是为了不改 36 处调用点。
@@ -897,6 +897,158 @@ function openLyricsRematchDialog(token, track) {
   };
 }
 
+/** 残留分组标题：后端给的是 key，展示文案走 i18n。 */
+const ORPHAN_GROUP_LABEL = {
+  output: () => libraryText('libGroupOutput', '成品音频 / 视频'),
+  covers: () => libraryText('libGroupCovers', '封面'),
+  lyrics: () => libraryText('libGroupLyrics', '歌词文件'),
+  upstream: () => libraryText('libGroupUpstream', '原始下载'),
+  overrides: () => libraryText('libGroupOverrides', '歌词覆盖'),
+};
+
+/**
+ * 「清理残留」弹窗：打开即扫描 → 勾选 → 清理。
+ *
+ * 扫描是只读的，只有点「清理选中」才会动文件，且删除前会二次确认。
+ * 服务端还会再校验一次路径白名单，前端勾选什么都不能越界。
+ */
+function openOrphanCleanupDialog(token) {
+  const old = document.getElementById('orphan-cleanup');
+  if (old) old.remove();
+  const wrap = document.createElement('div');
+  wrap.id = 'orphan-cleanup';
+  wrap.className = 'settings-modal-backdrop open';
+  wrap.innerHTML = `<section class="settings-modal card" style="max-width:660px">
+    <div class="section-head"><div><h2>${esc(libraryText('libCleanupTitle', '清理残留文件'))}</h2><p>${esc(libraryText('libCleanupDesc', '扫描曲库，找出已删除歌曲遗留的产物文件'))}</p></div><button class="btn ghost small" data-role="close">${esc(libraryText('libClose', '关闭'))}</button></div>
+    <div id="oc-body"><div class="notice">${esc(libraryText('libScanning', '扫描中…'))}</div></div>
+    <div id="oc-result" class="notice" hidden></div>
+    <div style="display:flex;gap:8px;margin-top:14px">
+      <button class="btn danger" id="oc-go" hidden>${esc(libraryText('libCleanup', '清理残留'))}</button>
+      <button class="btn ghost" data-role="close">${esc(libraryText('libCancel', '取消'))}</button>
+    </div>
+  </section>`;
+  document.body.appendChild(wrap);
+  const close = () => wrap.remove();
+  wrap.addEventListener('click', (e) => { if (e.target === wrap || e.target.closest('[data-role="close"]')) close(); });
+
+  const body = wrap.querySelector('#oc-body');
+  const result = wrap.querySelector('#oc-result');
+  const go = wrap.querySelector('#oc-go');
+  let scanned = null;
+
+  const selected = () => {
+    const paths = [...body.querySelectorAll('input[data-path]:checked')].map((i) => i.dataset.path);
+    const keys = [...body.querySelectorAll('input[data-key]:checked')].map((i) => i.dataset.key);
+    return { paths, overrideKeys: keys };
+  };
+
+  const syncButton = () => {
+    const { paths, overrideKeys } = selected();
+    const bytes = [...body.querySelectorAll('input:checked[data-bytes]')]
+      .reduce((n, i) => n + (Number(i.dataset.bytes) || 0), 0);
+    go.hidden = !(paths.length || overrideKeys.length);
+    if (!go.hidden) {
+      go.textContent = libraryFormat(libraryText('libCleanupConfirm', '确定删除选中的 {count} 项？共 {size}，删除后不可恢复。'),
+        { count: paths.length + overrideKeys.length, size: formatBytes(bytes) });
+    }
+  };
+
+  (async () => {
+    try {
+      scanned = await api('/api/library/admin/orphans', { headers: { 'x-admin-token': token } });
+    } catch (error) {
+      body.innerHTML = `<div class="notice">${esc(libraryFormat(libraryText('libScanFailed', '扫描失败：{error}'), { error: error.message }))}</div>`;
+      return;
+    }
+    if (!scanned.available) {
+      body.innerHTML = `<div class="notice">${esc(libraryText('libUnavailable', '曲库不可用：'))}${esc(scanned.reason || 'unknown')}</div>`;
+      return;
+    }
+    const groups = (scanned.groups || []).filter((g) => g.items.length);
+    if (!groups.length) {
+      body.innerHTML = `<div class="notice">${esc(libraryText('libCleanupEmpty', '没有发现残留文件，曲库是干净的'))}</div>`;
+      return;
+    }
+
+    body.innerHTML = `
+      <p class="helper">${esc(libraryText('libCleanupHint', '只列出数据库里已无对应记录的产物。正在制作的歌曲不会出现在这里。'))}</p>
+      ${(scanned.activeIds || []).length ? `<p class="helper">${esc(libraryFormat(libraryText('libCleanupActive', '有 {count} 首歌正在制作，其产物已自动排除'), { count: scanned.activeIds.length }))}</p>` : ''}
+      <div class="oc-summary">${esc(libraryFormat(libraryText('libCleanupSummary', '发现 {count} 项残留，共 {size}'), { count: scanned.totalCount, size: formatBytes(scanned.totalBytes) }))}</div>
+      <div class="oc-toolbar">
+        <button class="btn soft small" id="oc-all">${esc(libraryText('libCleanupSelectAll', '全选'))}</button>
+        <button class="btn soft small" id="oc-none">${esc(libraryText('libCleanupDeselectAll', '全不选'))}</button>
+      </div>
+      ${groups.map((group) => `
+        <div class="oc-group">
+          <div class="oc-group-head">
+            <label class="oc-label"><input type="checkbox" data-group="${esc(group.key)}" checked /> <strong>${esc((ORPHAN_GROUP_LABEL[group.key] || (() => group.label))())}</strong></label>
+            <span class="song-meta">${esc(libraryFormat(libraryText('libCleanupGroupItems', '{count} 项 · {size}'), { count: group.items.length, size: formatBytes(group.totalBytes) }))}</span>
+          </div>
+          <div class="song-meta oc-hint">${esc(group.hint || '')}</div>
+          <div class="oc-items">
+            ${group.items.map((item, index) => `
+              <label class="oc-item">
+                <input type="checkbox" data-group-item="${esc(group.key)}" ${item.path ? `data-path="${esc(item.path)}"` : `data-key="${esc(item.key)}"`} data-bytes="${Number(item.bytes) || 0}" checked />
+                <span class="oc-name">${esc(item.name || item.id)}</span>
+                <span class="song-meta">${esc(item.bytes ? formatBytes(item.bytes) : '')}</span>
+                <span class="song-meta">${esc((item.mtime || '').slice(0, 10))}</span>
+              </label>`).join('')}
+          </div>
+        </div>`).join('')}`;
+
+    body.querySelector('#oc-all').onclick = () => {
+      body.querySelectorAll('input[type="checkbox"]').forEach((i) => { i.checked = true; });
+      syncButton();
+    };
+    body.querySelector('#oc-none').onclick = () => {
+      body.querySelectorAll('input[type="checkbox"]').forEach((i) => { i.checked = false; });
+      syncButton();
+    };
+    // 组级勾选框 = 组内全选/全不选
+    body.querySelectorAll('input[data-group]').forEach((box) => {
+      box.onchange = () => {
+        body.querySelectorAll(`input[data-group-item="${box.dataset.group}"]`).forEach((i) => { i.checked = box.checked; });
+        syncButton();
+      };
+    });
+    body.querySelectorAll('input[data-group-item]').forEach((box) => { box.onchange = syncButton; });
+    syncButton();
+  })();
+
+  go.onclick = async () => {
+    const { paths, overrideKeys } = selected();
+    const bytes = [...body.querySelectorAll('input:checked[data-bytes]')]
+      .reduce((n, i) => n + (Number(i.dataset.bytes) || 0), 0);
+    // 二次确认：文件是真删，不进回收站
+    if (!confirm(libraryFormat(libraryText('libCleanupConfirm', '确定删除选中的 {count} 项？共 {size}，删除后不可恢复。'),
+      { count: paths.length + overrideKeys.length, size: formatBytes(bytes) }))) return;
+
+    go.disabled = true;
+    result.hidden = false;
+    result.textContent = libraryText('libCleanupRunning', '清理中…');
+    try {
+      const r = await api('/api/library/admin/orphans/purge', {
+        method: 'POST',
+        headers: { 'x-admin-token': token },
+        body: JSON.stringify({ paths, overrideKeys }),
+      });
+      const removed = (r.files?.removed || []).length + (r.overrides?.removed || []).length;
+      const skipped = (r.files?.rejected || []).length + (r.files?.failed || []).length + (r.overrides?.skipped || []).length;
+      const freed = (r.files?.freedBytes || 0);
+      result.textContent = skipped
+        ? libraryFormat(libraryText('libCleanupPartial', '清理完成：成功 {removed} 项，跳过 {skipped} 项，失败 {failed} 项'),
+          { removed, skipped, failed: (r.files?.failed || []).length })
+        : `${libraryFormat(libraryText('libCleanupDone', '已清理 {count} 项，释放 {size}'), { count: removed, size: formatBytes(freed) })}\n${libraryText('libCleanupManifest', '删除清单已保存到 data/ 目录')}`;
+      toast(libraryText('libCleanupDone', '已清理 {count} 项，释放 {size}').replace('{count}', removed).replace('{size}', formatBytes(freed)));
+      setTimeout(() => { close(); refreshAdminLibrary(token); }, 1200);
+    } catch (error) {
+      result.textContent = libraryFormat(libraryText('libCleanupFailed', '清理失败：{error}'), { error: error.message });
+    } finally {
+      go.disabled = false;
+    }
+  };
+}
+
 
 /**
  * 歌词状态徽标。
@@ -958,7 +1110,7 @@ async function refreshAdminLibrary(token) {
           <div><h2>${esc(libraryText('libHeading', '曲库管理'))}</h2><p>${esc(libraryText('libDesc', '每首歌的处理状态、耗时、文件大小与匹配分。点歌触发的下载/分离会在这里显示实时阶段。'))}</p></div>
           <span class="tag">${esc(libraryFormat(libraryText('libSummary', '{total} 首 · 已处理 {processed} · 处理中 {processing} · 待处理 {pending} · 失败 {failed}'), { total: data.total, processed: counts.separated || 0, processing: counts.processing || 0, pending: (counts.new || 0) + (counts.resolved || 0) + (counts.downloaded || 0), failed: counts.failed || 0 }))}</span>
         </div>
-        <div class="search-row" style="margin-bottom:14px"><input class="input" id="lib-search" placeholder="${esc(libraryText('libFilterPlaceholder', '按歌名 / 歌手 / 专辑筛选'))}" value="${esc(q)}" /><button class="btn soft" id="lib-refresh">${esc(libraryText('libRefresh', '刷新'))}</button></div>
+        <div class="search-row" style="margin-bottom:14px"><input class="input" id="lib-search" placeholder="${esc(libraryText('libFilterPlaceholder', '按歌名 / 歌手 / 专辑筛选'))}" value="${esc(q)}" /><button class="btn soft" id="lib-refresh">${esc(libraryText('libRefresh', '刷新'))}</button><button class="btn ghost" id="lib-cleanup" title="${esc(libraryText('libCleanupDesc', '扫描曲库，找出已删除歌曲遗留的产物文件'))}">${esc(libraryText('libCleanup', '清理残留'))}</button></div>
         <div class="lib-table">
           <div class="lib-row lib-head"><div></div><div>${esc(libraryText('libColTrack', '曲目'))}</div><div>${esc(libraryText('libColStatus', '状态'))}</div><div>${esc(libraryText('libColLyrics', '歌词'))}</div><div>${esc(libraryText('libColDuration', '耗时'))}</div><div>${esc(libraryText('libColSize', '大小'))}</div><div>${esc(libraryText('libColMatch', '匹配分'))}</div><div>${esc(libraryText('libColActions', '操作'))}</div></div>
           ${tracks.length ? tracks.map(track => `
@@ -990,6 +1142,7 @@ async function refreshAdminLibrary(token) {
       search.oninput = () => { clearTimeout(libraryRefreshTimer); libraryRefreshTimer = setTimeout(() => refreshAdminLibrary(token), 250); };
     }
     document.getElementById('lib-refresh')?.addEventListener('click', () => refreshAdminLibrary(token));
+    document.getElementById('lib-cleanup')?.addEventListener('click', () => openOrphanCleanupDialog(token));
     content.querySelectorAll('.lib-remove').forEach(button => button.onclick = async () => {
       const removeTrack = tracks.find(t => t.spotifyId === button.dataset.id);
       if (!confirm(libraryFormat(libraryText('libDeleteConfirm', '从曲库删除「{title}」？会同时删除成品音频、视频、封面、歌词和原始下载文件。'), { title: removeTrack?.title || button.dataset.id }))) return;

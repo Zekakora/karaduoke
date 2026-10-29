@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { translate, normalizeLanguage } = require('./i18n');
+const { normalizeEnv } = require('./environment');
 
 const PORT_MIN = 1024;
 const PORT_MAX = 65535;
@@ -125,7 +126,16 @@ class ConfigStore {
     if (fs.existsSync(this.file)) {
       try {
         const text = fs.readFileSync(this.file, 'utf8').replace(/^\uFEFF/, '');
-        return normalize(JSON.parse(text));
+        const parsed = normalize(JSON.parse(text));
+        // 环境目录必须跟着项目根走。老配置里可能存着别的副本的绝对路径，
+        // 项目整个复制到别处后它还会指着旧位置，新副本因此误报「环境已就绪」。
+        // 这里在启动时一次性改回相对路径，不用用户手动去点保存。
+        const fixed = normalizeEnv(this.root, parsed.env);
+        if (fixed.changed) {
+          parsed.env = fixed.env;
+          this.write(parsed);
+        }
+        return parsed;
       } catch {
         const backup = `${this.file}.broken-${Date.now()}`;
         try { fs.renameSync(this.file, backup); } catch {}

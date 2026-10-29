@@ -23,6 +23,11 @@ const I18N = {
     'env.desc': 'Python runtime, model cache and binary tools. Everything defaults to the env folder in the project root.',
     'env.dir': 'Environment folder',
     'env.dirHint': 'Relative to the project root. Leave empty to use env\\.',
+    'env.browse': 'Browse…',
+    'env.picked': 'Selected {path}',
+    'env.pickOutside': 'Outside the project root — kept as an absolute path',
+    'env.pickCancelled': 'No folder selected',
+    'env.pickFailed': 'Could not open the folder dialog: {error}',
     'env.paths': 'Sub folders',
     'env.python': 'Python',
     'env.cache': 'Model cache',
@@ -149,6 +154,11 @@ const I18N = {
     'env.desc': 'Python 运行环境、模型缓存和二进制工具。默认都放在项目根的 env 目录下。',
     'env.dir': '环境目录',
     'env.dirHint': '相对项目根。留空则使用 env\\。',
+    'env.browse': '浏览…',
+    'env.picked': '已选择 {path}',
+    'env.pickOutside': '在项目根之外，保留为绝对路径',
+    'env.pickCancelled': '没有选择文件夹',
+    'env.pickFailed': '无法打开文件夹对话框：{error}',
     'env.paths': '子目录',
     'env.python': 'Python',
     'env.cache': '模型缓存',
@@ -275,6 +285,11 @@ const I18N = {
     'env.desc': 'Python-Laufzeit, Modell-Cache und Binärwerkzeuge. Standardmäßig alles im Ordner env im Projektstamm.',
     'env.dir': 'Umgebungsordner',
     'env.dirHint': 'Relativ zum Projektstamm. Leer lassen für env\\.',
+    'env.browse': 'Durchsuchen…',
+    'env.picked': '{path} ausgewählt',
+    'env.pickOutside': 'Außerhalb des Projektstamms – als absoluter Pfad beibehalten',
+    'env.pickCancelled': 'Kein Ordner ausgewählt',
+    'env.pickFailed': 'Ordnerdialog konnte nicht geöffnet werden: {error}',
     'env.paths': 'Unterordner',
     'env.python': 'Python',
     'env.cache': 'Modell-Cache',
@@ -985,6 +1000,40 @@ async function saveEnv(event) {
   }
 }
 
+/** 环境目录输入框：target 字段 → 表单元素名 */
+const ENV_INPUT = { dir: 'envDir', python: 'envPython', cache: 'envCache', bin: 'envBin' };
+
+/**
+ * 用系统文件夹对话框挑一个环境目录。
+ *
+ * 浏览器不会把本地路径交给网页，所以由后端调 PowerShell 的 FolderBrowserDialog。
+ * 选完直接写进输入框并保存（少点一次「保存」）；后端会先把路径规范化，
+ * 项目根内的存成相对路径，好让整个项目搬到别处后 env 跟着走。
+ */
+async function pickEnvDir(button, target) {
+  button.disabled = true;
+  try {
+    const result = await api('/api/env/pick-dir', {
+      method: 'POST',
+      body: JSON.stringify({ target })
+    });
+    if (!result.picked) { showNotice(t('env.pickCancelled'), 'info'); return; }
+
+    const input = el.envForm.elements[ENV_INPUT[target]];
+    if (input) input.value = result.value || '';
+    // 只提交这一个字段，其余保持原样（store.save 是补丁式合并）
+    await api('/api/config', { method: 'PUT', body: JSON.stringify({ env: { [target]: result.value || '' } }) });
+    showNotice(t('env.picked', { path: result.picked }), 'info');
+    if (result.outside) showNotice(t('env.pickOutside'), 'info');
+    state.envSizes = null;
+    await refreshEnv();
+  } catch (error) {
+    showNotice(t('env.pickFailed', { error: error.message }), 'error');
+  } finally {
+    button.disabled = false;
+  }
+}
+
 async function migrateEnv(button) {
   button.disabled = true;
   showNotice(t('env.migrating'), 'info', true);
@@ -1171,6 +1220,9 @@ if (el.envForm) el.envForm.addEventListener('submit', saveEnv);
       try { await api('/api/env/open', { method: 'POST', body: JSON.stringify({ target: 'dir' }) }); }
       catch (error) { showNotice(error.message, 'error'); }
     });
+  }
+  for (const pick of document.querySelectorAll('.env-pick')) {
+    pick.addEventListener('click', () => pickEnvDir(pick, pick.dataset.target));
   }
 }
 el.settingsCancel.addEventListener('click', () => el.dialog.close());

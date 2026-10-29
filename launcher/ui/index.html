@@ -185,7 +185,10 @@
           <section class="env-block">
             <label class="field">
               <span data-i18n="env.dir">Environment folder</span>
-              <input type="text" name="envDir" placeholder="env" autocomplete="off" spellcheck="false" />
+              <span class="field-input-row">
+                <input type="text" name="envDir" placeholder="env" autocomplete="off" spellcheck="false" />
+                <button type="button" class="btn tiny ghost env-pick" data-target="dir" data-i18n="env.browse" title="Browse for a folder">Browse…</button>
+              </span>
               <small data-i18n="env.dirHint">Relative to the project root. Leave empty to use env\.</small>
             </label>
             <div class="env-subgrid">

@@ -1267,6 +1267,59 @@ async function handleApi(req, res, url) {
     syncPrepareState();
     return sendJson(res, 200, { ok: true, spotifyId, removedFiles, fileErrors });
   }
+  // ---- 残留文件清理（曲库管理页「清理残留」弹窗）----
+  // 歌曲从曲库删掉后，产物有时还留在磁盘上（早期清理逻辑不完整、或文件被别的
+  // 流程写回来）。扫描是只读的，只报"磁盘上有、数据库里已经没有记录"的条目；
+  // 删除走另一个接口，路径必须过白名单。
+  if (method === 'GET' && pathname === '/api/library/admin/orphans') {
+    if (!isAdmin(req)) return sendError(res, 401, '需要 DJ 权限', 'ADMIN_REQUIRED');
+    const data = libraryDb.scanOrphans({
+      assetsRoot: MEDIA_ROOT,
+      dataRoot: DATA_DIR,
+      overrideKeys: lyricsOverrides.list().map((item) => item.key),
+    });
+    // 正在排队/制作的歌，产物正在被写入，不能当成残留 —— 交给前端置灰
+    data.activeIds = prepareQueue.list()
+      .filter((job) => job.status === 'queued' || job.status === 'running')
+      .map((job) => String(job.spotifyId));
+    return sendJson(res, 200, data);
+  }
+  if (method === 'POST' && pathname === '/api/library/admin/orphans/purge') {
+    if (!isAdmin(req)) return sendError(res, 401, '需要 DJ 权限', 'ADMIN_REQUIRED');
+    const body = await readBody(req);
+    const paths = Array.isArray(body.paths) ? body.paths.map(String) : [];
+    const overrideKeys = Array.isArray(body.overrideKeys) ? body.overrideKeys.map(String) : [];
+    if (!paths.length && !overrideKeys.length) return sendError(res, 400, '没有要清理的内容', 'NOTHING_TO_PURGE');
+
+    const activeIds = prepareQueue.list()
+      .filter((job) => job.status === 'queued' || job.status === 'running')
+      .map((job) => String(job.spotifyId));
+
+    // 删之前落一份清单：文件是真删（不进回收站），有清单至少能查删过什么
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const files = paths.length
+      ? libraryDb.purgeFiles(paths, {
+          assetsRoot: MEDIA_ROOT,
+          dataRoot: DATA_DIR,
+          blockedIds: activeIds,
+          manifestFile: path.join(DATA_DIR, `orphan-cleanup-${stamp}.json`),
+        })
+      : { ok: true, removed: [], rejected: [], failed: [], freedBytes: 0, manifest: null };
+
+    const overrides = { removed: [], skipped: [] };
+    for (const key of overrideKeys) {
+      const m = /^local:(.+)$/.exec(key);
+      if (!m) { overrides.skipped.push({ key, reason: 'bad-key' }); continue; }
+      if (activeIds.includes(m[1])) { overrides.skipped.push({ key, reason: 'job-active' }); continue; }
+      if (!lyricsOverrides.remove(key)) { overrides.skipped.push({ key, reason: 'not-found' }); continue; }
+      for (const cacheKey of [...lyricsCache.keys()]) {
+        if (cacheKey.startsWith(`${key}|`)) lyricsCache.delete(cacheKey);
+      }
+      overrides.removed.push(key);
+    }
+
+    return sendJson(res, 200, { ok: files.ok && !files.failed.length, files, overrides });
+  }
   // ---- 后台制作任务 ----
   if (method === 'GET' && pathname === '/api/prepare') {
     const spotifyId = String(url.searchParams.get('spotifyId') || '').trim();

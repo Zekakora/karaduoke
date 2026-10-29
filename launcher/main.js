@@ -503,6 +503,24 @@ async function handleApi(req, res, url) {
       return sendError(res, 500, error.message);
     }
   }
+  // 用系统对话框选一个环境目录（总目录 / python / cache / bin）。
+  // 浏览器不会把本地路径交给网页，所以只能借 PowerShell 的文件夹对话框。
+  if (method === 'POST' && pathname === '/api/env/pick-dir') {
+    const body = await readBody(req);
+    const target = String(body.target || 'dir');
+    const fields = { dir: 'dir', python: 'pythonDir', cache: 'cacheDir', bin: 'binDir' };
+    if (!fields[target]) return sendError(res, 400, msg('env.pickUnsupported'));
+
+    const paths = environment.resolve(ROOT, store.get());
+    const picked = await environment.pickDirectory(paths[fields[target]], msg('env.pickTitle'));
+    if (!picked) return sendJson(res, 200, { picked: null });
+
+    // 选完立刻规范化：在项目根内 → 相对路径（跟着项目走）；
+    // 在项目根外 → 保留绝对路径（用户就是想放到别处）。
+    const current = store.get().env;
+    const value = environment.normalizeEnv(ROOT, { ...current, [target]: picked }).env[target];
+    return sendJson(res, 200, { picked, value, outside: path.isAbsolute(value) });
+  }
   if (method === 'POST' && pathname === '/api/env/setup-script') {
     try {
       const file = environment.setupScript(ROOT, store.get());
@@ -548,6 +566,13 @@ async function handleApi(req, res, url) {
 
   if (method === 'PUT' && pathname === '/api/config') {
     const body = await readBody(req);
+    // 环境目录一律按「相对项目根」存：存成绝对路径的话，整个项目复制到别处后
+    // 环境面板还会指着旧位置。只有真的指向项目根之外时才保留绝对路径。
+    if (body && body.env && typeof body.env === 'object') {
+      const fixed = environment.normalizeEnv(ROOT, body.env);
+      body.env = fixed.env;
+      if (fixed.rebased) log.line('launcher', msg('env.rebased'));
+    }
     const result = store.save(body);
     tunnel.invalidateInfo();
     log.line('launcher', msg('launcher.settingsSaved'));

@@ -386,4 +386,279 @@ function summary() {
   }
 }
 
-module.exports = { open, close, deleteTrack, listTracks, getTrack, getLyrics, summary, adminTracks, STATUS_TEXT, resolvePath, songKeySupported: true };
+// ---------------------------------------------------------------- 残留文件清理
+// 曲库里的歌被删掉后，产物文件有时会留在磁盘上（早期清理逻辑不完整，或文件
+// 被别的流程写回来）。这里负责**只读扫描**：列出"磁盘上有、数据库里已经没有
+// 对应记录"的文件；真正删除由 purgeFiles() 做，且必须先过白名单。
+//
+// 目录位置由调用方传入（server.js 的 MEDIA_ROOT / DATA_DIR），
+// 这样测试可以指向临时目录，不用动真实的 assets/。
+
+const SPOTIFY_ID_RE = /^[A-Za-z0-9]{22}$/;
+const VIDEO_ID_RE = /^[A-Za-z0-9_-]{11}$/;
+const LYRICS_EXTS = ['.lrc', '.yrc', '.qrc'];
+
+/** 扫描目标。key 是清理接口的定位标识，root 由调用方给的根目录推导。 */
+const ORPHAN_TARGETS = [
+  { key: 'output', label: '成品音频 / 视频', hint: 'assets/output/library/<spotifyId>/', mode: 'dir', under: ['output', 'library'] },
+  { key: 'covers', label: '封面', hint: 'assets/covers/<spotifyId>.jpg', mode: 'file', under: ['covers'], exts: ['.jpg'] },
+  { key: 'lyrics', label: '歌词文件', hint: `assets/lyrics/<spotifyId>${LYRICS_EXTS.join(' / ')}`, mode: 'file', under: ['lyrics'], exts: LYRICS_EXTS },
+];
+
+function listDir(dir) {
+  try { return fs.readdirSync(dir, { withFileTypes: true }); }
+  catch { return null; }
+}
+
+/** 目录递归求大小；文件直接取 size。都异常安全。 */
+function sizeOf(target) {
+  let total = 0;
+  const walk = (p) => {
+    let st;
+    try { st = fs.statSync(p); } catch { return; }
+    if (st.isDirectory()) {
+      for (const entry of listDir(p) || []) walk(path.join(p, entry.name));
+      return;
+    }
+    total += st.size;
+  };
+  walk(target);
+  return total;
+}
+
+function statEntry(target) {
+  try {
+    const st = fs.statSync(target);
+    return { bytes: st.isDirectory() ? sizeOf(target) : st.size, mtime: st.mtime.toISOString() };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 只读扫描残留文件。
+ *
+ * @param {{assetsRoot?: string, dataRoot?: string, overrideKeys?: string[]}} opts
+ *   overrideKeys —— lyrics-overrides.json 里的键（`local:<spotifyId>`）。
+ *   它存在 JSON 里而不是磁盘文件上，所以由调用方读出来传进来比对。
+ * @returns 分组清单；目录不存在时返回空组（新装环境没有 assets/，不该报错）
+ */
+function scanOrphans(opts = {}) {
+  const conn = open();
+  if (!conn) {
+    return { available: false, groups: [], totalBytes: 0, totalCount: 0, reason: DatabaseSync ? 'no-db' : 'sqlite-unavailable' };
+  }
+
+  const assetsRoot = path.resolve(opts.assetsRoot || path.join(ROOT, 'assets'));
+  const dataRoot = path.resolve(opts.dataRoot || path.join(ROOT, 'data'));
+
+  // 已知 ID：spotify_id 用于 assets/ 下的三棵树，source_video_id 用于 data/library/
+  const spotifyIds = new Set();
+  const videoIds = new Set();
+  try {
+    for (const row of conn.prepare('SELECT spotify_id, source_video_id FROM tracks').all()) {
+      if (row.spotify_id) spotifyIds.add(String(row.spotify_id));
+      if (row.source_video_id) videoIds.add(String(row.source_video_id));
+    }
+  } catch {
+    return { available: false, groups: [], totalBytes: 0, totalCount: 0, reason: 'query-failed' };
+  }
+
+  const groups = [];
+  const skipped = [];
+  const makeGroup = (key, label, hint, root) => {
+    const group = { key, label, hint, root, items: [], totalBytes: 0 };
+    groups.push(group);
+    return group;
+  };
+  const push = (group, id, entryPath, kind) => {
+    const info = statEntry(entryPath);
+    if (!info) return;
+    group.items.push({ id, path: entryPath, name: path.basename(entryPath), kind, bytes: info.bytes, mtime: info.mtime });
+    group.totalBytes += info.bytes;
+  };
+
+  // (1) assets/{output/library, covers, lyrics} —— 按 spotifyId 命名
+  for (const spec of ORPHAN_TARGETS) {
+    const root = path.join(assetsRoot, ...spec.under);
+    const group = makeGroup(spec.key, spec.label, spec.hint, root);
+    for (const entry of listDir(root) || []) {
+      const entryPath = path.join(root, entry.name);
+      if (spec.mode === 'dir') {
+        if (!entry.isDirectory()) continue;
+      } else if (!entry.isFile()) continue;
+
+      // 名字不像 spotifyId 的一律跳过：probe-loopback、.tmp-final 之类不是曲目产物
+      const stem = spec.mode === 'dir' ? entry.name : path.basename(entry.name, path.extname(entry.name));
+      if (!SPOTIFY_ID_RE.test(stem)) {
+        skipped.push({ path: entryPath, reason: 'not-a-track-id' });
+        continue;
+      }
+      if (spec.exts && !spec.exts.includes(path.extname(entry.name).toLowerCase())) {
+        skipped.push({ path: entryPath, reason: 'extension-not-managed' });
+        continue;
+      }
+      if (spotifyIds.has(stem)) continue; // 曲库里还有这首歌 → 不是残留
+      push(group, stem, entryPath, spec.mode);
+    }
+  }
+
+  // (2) data/library/<videoId>.wav + <videoId>.match.json —— 原始下载，按 YouTube videoId 命名
+  const upstreamRoot = path.join(dataRoot, 'library');
+  const upstream = makeGroup('upstream', '原始下载', 'data/library/<videoId>.wav · .match.json', upstreamRoot);
+  for (const entry of listDir(upstreamRoot) || []) {
+    if (!entry.isFile()) continue;
+    const entryPath = path.join(upstreamRoot, entry.name);
+    let videoId = null;
+    if (entry.name.endsWith('.match.json')) videoId = entry.name.slice(0, -'.match.json'.length);
+    else if (entry.name.toLowerCase().endsWith('.wav')) videoId = entry.name.slice(0, -4);
+    if (!videoId || !VIDEO_ID_RE.test(videoId)) {
+      skipped.push({ path: entryPath, reason: 'not-a-video-id' });
+      continue;
+    }
+    if (videoIds.has(videoId)) continue;
+    push(upstream, videoId, entryPath, 'file');
+  }
+
+  // (3) 歌词覆盖表：DJ 手动重搜的结果，曲目删掉后这些条目就没人引用了。
+  //     不是磁盘文件，所以这里只登记，删除由 server 侧调 lyricsOverrides.remove()。
+  if (Array.isArray(opts.overrideKeys) && opts.overrideKeys.length) {
+    const g = makeGroup('overrides', '歌词覆盖', 'data/lyrics-overrides.json', path.join(dataRoot, 'lyrics-overrides.json'));
+    for (const key of opts.overrideKeys) {
+      const m = /^local:(.+)$/.exec(String(key));
+      if (!m || spotifyIds.has(m[1])) continue;
+      g.items.push({ id: m[1], key: String(key), path: null, name: String(key), kind: 'entry', bytes: 0, mtime: null });
+    }
+  }
+
+  const items = groups.reduce((n, g) => n + g.items.length, 0);
+  return {
+    available: true,
+    dbPath,
+    scannedAt: new Date().toISOString(),
+    roots: { assets: assetsRoot, data: dataRoot },
+    counts: { tracks: spotifyIds.size, videos: videoIds.size },
+    groups,
+    skipped,
+    totalCount: items,
+    totalBytes: groups.reduce((n, g) => n + g.totalBytes, 0),
+  };
+}
+
+/**
+ * 删除扫描出来的残留文件。
+ *
+ * 安全边界（任何一条不满足就跳过该文件）：
+ *   1. 路径必须在 assetsRoot / dataRoot 之内；
+ *   2. 且必须是某个受管目录（output/library、covers、lyrics、data/library）的**直接子项**，
+ *      防止传入根目录本身或越界的深层路径；
+ *   3. 名字必须能解析出合法的 spotifyId / videoId；
+ *   4. 该 id 不在 blockedIds 里（正在后台制作的歌，其产物不能删）；
+ *   5. 该 id 在**当前** tracks 表里仍然不存在 —— 扫描与清理之间可能有几秒到几分钟，
+ *      期间这首歌可能又被点回曲库了，删掉就会把正在用的产物抹掉。
+ *
+ * @param {string[]} paths 绝对路径
+ * @param {{assetsRoot?: string, dataRoot?: string, blockedIds?: Iterable<string>, manifestFile?: string}} opts
+ */
+function purgeFiles(paths, opts = {}) {
+  const assetsRoot = path.resolve(opts.assetsRoot || path.join(ROOT, 'assets'));
+  const dataRoot = path.resolve(opts.dataRoot || path.join(ROOT, 'data'));
+  const blocked = new Set(opts.blockedIds || []);
+
+  // 第 5 条边界需要现场查一次库。查不了就一刀切拒绝 —— 没有依据判断"是不是孤儿"，
+  // 宁可不删也不能删错。
+  const conn = open();
+  const live = new Set();
+  if (!conn) {
+    return {
+      ok: false,
+      removed: [], rejected: paths.map((p) => ({ path: String(p), reason: 'db-unavailable' })),
+      failed: [], freedBytes: 0, manifest: null,
+    };
+  }
+  try {
+    for (const row of conn.prepare('SELECT spotify_id, source_video_id FROM tracks').all()) {
+      if (row.spotify_id) live.add(String(row.spotify_id));
+      if (row.source_video_id) live.add(String(row.source_video_id));
+    }
+  } catch {
+    return {
+      ok: false,
+      removed: [], rejected: paths.map((p) => ({ path: String(p), reason: 'db-unavailable' })),
+      failed: [], freedBytes: 0, manifest: null,
+    };
+  }
+
+  // 受管目录 → 允许删除的直属子项。路径必须落在其中一个目录下。
+  const managed = [
+    { root: path.join(assetsRoot, 'output', 'library'), pattern: SPOTIFY_ID_RE },
+    { root: path.join(assetsRoot, 'covers'), pattern: SPOTIFY_ID_RE },
+    { root: path.join(assetsRoot, 'lyrics'), pattern: SPOTIFY_ID_RE },
+    { root: path.join(dataRoot, 'library'), pattern: VIDEO_ID_RE },
+  ];
+  const allowedRoots = [assetsRoot + path.sep, dataRoot + path.sep];
+
+  const removed = [];
+  const rejected = [];
+  const failed = [];
+
+  for (const raw of paths) {
+    const target = path.resolve(String(raw || ''));
+    const reject = (reason) => rejected.push({ path: target, reason });
+
+    if (!allowedRoots.some((root) => target.startsWith(root))) { reject('outside-roots'); continue; }
+
+    const parent = path.dirname(target);
+    const scope = managed.find((m) => parent === m.root);
+    if (!scope) { reject('not-managed-dir'); continue; }
+
+    const name = path.basename(target);
+    // 与扫描时同样的 id 解析：<videoId>.match.json / <videoId>.wav / <spotifyId>[.ext]
+    let id = name;
+    for (const suffix of ['.match.json']) {
+      if (id.endsWith(suffix)) { id = id.slice(0, -suffix.length); break; }
+    }
+    if (id === name) id = path.basename(name, path.extname(name));
+    if (!scope.pattern.test(id)) { reject('bad-id'); continue; }
+
+    if (blocked.has(id)) { reject('job-active'); continue; }
+    if (live.has(id)) { reject('track-exists'); continue; }
+    if (!fs.existsSync(target)) { reject('already-gone'); continue; }
+
+    const bytes = sizeOf(target);
+    try {
+      fs.rmSync(target, { recursive: true, force: true });
+      removed.push({ path: target, id, bytes });
+    } catch (error) {
+      failed.push({ path: target, id, error: error.message });
+    }
+  }
+
+  // 删之前先落一份清单：文件是真删（不进回收站），有清单至少能查删过什么
+  let manifest = null;
+  if (opts.manifestFile && removed.length) {
+    manifest = opts.manifestFile;
+    try {
+      fs.mkdirSync(path.dirname(manifest), { recursive: true });
+      fs.writeFileSync(manifest, JSON.stringify({
+        at: new Date().toISOString(),
+        roots: { assets: assetsRoot, data: dataRoot },
+        freedBytes: removed.reduce((n, item) => n + item.bytes, 0),
+        removed,
+      }, null, 2), 'utf8');
+    } catch (error) {
+      manifest = { path: manifest, error: error.message };
+    }
+  }
+
+  return {
+    ok: failed.length === 0,
+    removed,
+    rejected,
+    failed,
+    freedBytes: removed.reduce((n, item) => n + item.bytes, 0),
+    manifest,
+  };
+}
+
+module.exports = { open, close, deleteTrack, listTracks, getTrack, getLyrics, summary, adminTracks, scanOrphans, purgeFiles, STATUS_TEXT, resolvePath, songKeySupported: true };

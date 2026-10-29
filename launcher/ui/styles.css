@@ -378,6 +378,11 @@ dialog::backdrop { background: rgba(4, 7, 10, 0.72); backdrop-filter: blur(2px);
 .env-subgrid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
 @media (max-width: 720px) { .env-subgrid { grid-template-columns: 1fr; } }
 
+/* 环境目录输入框 + 「浏览…」按钮并排 */
+.field-input-row { display: flex; gap: 8px; align-items: center; }
+.field-input-row input[type="text"] { flex: 1; min-width: 0; }
+.env-pick { flex: none; white-space: nowrap; }
+
 /* 每行：名称 | 状态 | 操作按钮 */
 .env-status { list-style: none; margin: 0; padding: 0; display: grid; }
 .env-status li {
