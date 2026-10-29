@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="launcher-token" content="__LAUNCHER_TOKEN__" />
+    <title>LC AACHEN Karaoke Console</title>
+    <link rel="icon" type="image/png" href="/ICON.png" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="topbar">
+        <div class="brand">
+          <img class="logo" src="/ICON.png" alt="LC AACHEN" />
+          <div>
+            <h1 data-i18n="app.heading">LC AACHEN Karaoke Console</h1>
+            <p class="muted" id="version">Console</p>
+          </div>
+        </div>
+        <div class="chips">
+          <select id="mode-select" class="lang-select mode-select" aria-label="Mode">
+            <!-- option 由 app.js 按当前语言动态填充，避免界面语言与模式名不一致 -->
+          </select>
+          <span class="chip" id="chip-service"><i></i>Service · Stopped</span>
+          <span class="chip" id="chip-tunnel"><i></i>Tunnel · Off</span>
+          <select id="language-select" class="lang-select" aria-label="Language">
+            <option value="en">English</option>
+            <option value="zh">中文</option>
+            <option value="de">Deutsch</option>
+          </select>
+        </div>
+      </header>
+
+      <main class="content">
+        <section class="panel control">
+          <div class="actions">
+            <button class="btn primary" id="btn-start" type="button" data-i18n="button.start">Start service</button>
+            <button class="btn" id="btn-restart" type="button" data-i18n="button.restart">Restart service</button>
+            <button class="btn danger" id="btn-stop" type="button" data-i18n="button.stop">Stop service</button>
+            <button class="btn accent" id="btn-display" type="button" data-i18n="button.display">Open display</button>
+            <button class="btn accent" id="btn-tunnel" type="button">Enable tunnel</button>
+            <button class="btn ghost" id="btn-env" type="button" data-i18n="button.env">Environment</button>
+            <button class="btn ghost" id="btn-settings" type="button" data-i18n="button.settings">Settings</button>
+          </div>
+
+          <div class="addresses">
+            <div class="address">
+              <span class="label" data-i18n="address.local">Local</span>
+              <code id="addr-local">--</code>
+              <button class="copy" type="button" data-copy="addr-local" data-i18n="button.copy">Copy</button>
+            </div>
+            <div class="address">
+              <span class="label" data-i18n="address.lan">LAN</span>
+              <code id="addr-lan">--</code>
+              <button class="copy" type="button" data-copy="addr-lan" data-i18n="button.copy">Copy</button>
+            </div>
+            <div class="address">
+              <span class="label" data-i18n="address.public">Public</span>
+              <code id="addr-public">--</code>
+              <button class="copy" type="button" data-copy="addr-public" data-i18n="button.copy">Copy</button>
+            </div>
+          </div>
+
+          <div class="notice" id="notice" hidden></div>
+        </section>
+
+        <section class="panel logs">
+          <header class="panel-head">
+            <h2 data-i18n="log.title">Runtime log</h2>
+            <div class="log-actions">
+              <span class="muted" id="log-file"></span>
+              <button class="btn tiny ghost" id="btn-clear-log" type="button" data-i18n="button.clear">Clear</button>
+            </div>
+          </header>
+          <div class="log" id="log" role="log" aria-live="polite"></div>
+        </section>
+      </main>
+    </div>
+
+    <dialog id="settings-dialog">
+      <form id="settings-form">
+        <header>
+          <h2 data-i18n="settings.title">Settings</h2>
+          <p class="muted" data-i18n="settings.desc">Port, DJ password and API key take effect after a service restart.</p>
+        </header>
+
+        <div class="fields">
+          <label class="field">
+            <span data-i18n="settings.port">Service port</span>
+            <input type="number" name="port" min="1024" max="65535" required />
+            <small data-i18n="settings.portHint">Guests and the DJ console use this port (default 3000).</small>
+          </label>
+
+          <label class="field">
+            <span data-i18n="settings.password">DJ password</span>
+            <span class="input-row">
+              <input type="password" name="djPassword" minlength="4" required />
+              <button type="button" class="btn tiny ghost" id="btn-reveal" data-i18n="button.show">Show</button>
+            </span>
+            <small data-i18n="settings.passwordHint">Generated on first launch; change it to something easy to type.</small>
+          </label>
+
+          <label class="field">
+            <span data-i18n="settings.apiKey">YouTube API key (optional)</span>
+            <input type="text" name="youtubeApiKey" placeholder="" autocomplete="off" />
+            <small data-i18n="settings.apiKeyHint">Leave empty to use the built-in demo catalog.</small>
+          </label>
+
+          <label class="field">
+            <span data-i18n="settings.cloudflared">cloudflared path (optional)</span>
+            <input type="text" name="cloudflaredPath" placeholder="bin\cloudflared.exe" />
+            <small id="cloudflared-hint" data-i18n="settings.cloudflaredHint">Empty: bin\cloudflared.exe or the system PATH is used.</small>
+          </label>
+
+          <label class="field">
+            <span data-i18n="settings.fixedUrl">Fixed public URL (optional)</span>
+            <input type="url" name="fixedPublicUrl" placeholder="https://karaoke.example.com" />
+            <small data-i18n="settings.fixedUrlHint">For your own domain or a named tunnel; quick tunnels override it.</small>
+          </label>
+
+          <div class="field-group">
+            <h3 class="field-group-title" data-i18n="settings.spotifyTitle">Spotify</h3>
+            <p class="muted field-group-hint" data-i18n="settings.spotifyHint">Credentials live in this console config (not in the project files), so the published project carries no secrets.</p>
+
+            <label class="field">
+              <span data-i18n="settings.spotifyClientId">Client ID</span>
+              <input type="text" name="spotifyClientId" autocomplete="off" spellcheck="false" />
+            </label>
+
+            <label class="field">
+              <span data-i18n="settings.spotifyClientSecret">Client Secret</span>
+              <span class="input-row">
+                <input type="password" name="spotifyClientSecret" autocomplete="off" spellcheck="false" />
+                <button type="button" class="btn tiny ghost" id="btn-reveal-spotify" data-i18n="button.show">Show</button>
+              </span>
+            </label>
+
+            <label class="field">
+              <span data-i18n="settings.spotifyRedirect">Redirect URI</span>
+              <input type="text" name="spotifyRedirectUri" id="spotify-redirect" autocomplete="off" spellcheck="false" />
+              <small data-i18n="settings.spotifyRedirectHint">Register this exact value in the Spotify app dashboard.</small>
+            </label>
+
+            <label class="field">
+              <span data-i18n="settings.spotifyToken">Refresh token</span>
+              <textarea name="spotifyRefreshToken" rows="2" autocomplete="off" spellcheck="false"></textarea>
+              <small data-i18n="settings.spotifyTokenHint">Paste a token, or use “Sign in” below and then “Import from service”.</small>
+            </label>
+
+            <p class="muted" id="spotify-status"></p>
+            <div class="input-row spotify-actions">
+              <button type="button" class="btn soft" id="btn-spotify-login" data-i18n="settings.spotifyLogin">Sign in with Spotify</button>
+              <button type="button" class="btn ghost" id="btn-spotify-import" data-i18n="settings.spotifyImport">Import from service</button>
+              <button type="button" class="btn danger" id="btn-spotify-logout" data-i18n="settings.spotifyLogout">Sign out</button>
+            </div>
+          </div>
+
+          <label class="check">
+            <input type="checkbox" name="autoStart" />
+            <span data-i18n="settings.autoStart">Open the tunnel automatically when the service starts</span>
+          </label>
+        </div>
+
+        <footer>
+          <span class="muted" id="settings-path"></span>
+          <div class="dialog-actions">
+            <button type="button" class="btn ghost" id="btn-settings-cancel" data-i18n="button.cancel">Cancel</button>
+            <button type="submit" class="btn primary" id="btn-settings-save" data-i18n="button.save">Save</button>
+          </div>
+        </footer>
+      </form>
+    </dialog>
+
+    <dialog id="env-dialog" class="env-dialog">
+      <form id="env-form">
+        <header>
+          <div>
+            <h2 data-i18n="env.title">Environment</h2>
+            <p class="muted" data-i18n="env.desc">Python runtime, model cache and binary tools. Everything defaults to the env folder in the project root.</p>
+          </div>
+        </header>
+
+        <div class="fields">
+          <section class="env-block">
+            <label class="field">
+              <span data-i18n="env.dir">Environment folder</span>
+              <input type="text" name="envDir" placeholder="env" autocomplete="off" spellcheck="false" />
+              <small data-i18n="env.dirHint">Relative to the project root. Leave empty to use env\.</small>
+            </label>
+            <div class="env-subgrid">
+              <label class="field">
+                <span data-i18n="env.python">Python</span>
+                <input type="text" name="envPython" placeholder="env\python" autocomplete="off" spellcheck="false" />
+              </label>
+              <label class="field">
+                <span data-i18n="env.cache">Model cache</span>
+                <input type="text" name="envCache" placeholder="env\cache" autocomplete="off" spellcheck="false" />
+              </label>
+              <label class="field">
+                <span data-i18n="env.bin">Binaries</span>
+                <input type="text" name="envBin" placeholder="env\bin" autocomplete="off" spellcheck="false" />
+              </label>
+            </div>
+          </section>
+
+          <section class="env-block">
+            <div class="env-block-head">
+              <h3 class="env-block-title" data-i18n="env.status">Status</h3>
+              <div class="env-block-actions">
+                <button type="button" class="btn tiny soft" id="btn-env-install" data-i18n="env.installAll">Install missing</button>
+                <button type="button" class="btn tiny ghost" id="btn-env-refresh" data-i18n="env.refresh">Refresh</button>
+              </div>
+            </div>
+            <ul class="env-status" id="env-status"></ul>
+          </section>
+        </div>
+
+        <footer>
+          <span class="muted" id="env-hint"></span>
+          <div class="dialog-actions">
+            <button type="button" class="btn ghost" id="btn-env-open" data-i18n="env.open">Open folder</button>
+            <button type="button" class="btn ghost" id="btn-env-migrate" data-i18n="env.migrate">Move existing setup</button>
+            <button type="button" class="btn ghost" id="btn-env-cancel" data-i18n="button.cancel">Cancel</button>
+            <button type="submit" class="btn primary" data-i18n="button.save">Save</button>
+          </div>
+        </footer>
+      </form>
+    </dialog>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

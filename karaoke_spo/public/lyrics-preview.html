@@ -1,0 +1,371 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>歌词画面预览 · LC AACHEN Karaoke</title>
+    <link rel="icon" type="image/png" href="/ICON.png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Noto+Sans+SC:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/lyrics-view.css" />
+    <style>
+      html, body { margin: 0; padding: 0; height: 100%; background: #0b0b0d; overflow: hidden; }
+      #preview { position: fixed; inset: 0; }
+      #preview .lv-stage { border-radius: 0; }
+
+      /* 预览用的小工具条，不影响歌词视图本身 */
+      .preview-bar {
+        position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%);
+        display: flex; gap: 8px; align-items: center; z-index: 50;
+        padding: 8px 12px; border-radius: 999px;
+        background: rgba(12,12,14,.72); backdrop-filter: blur(14px);
+        border: 1px solid rgba(255,255,255,.12);
+        font: 500 12px/1 'Manrope','Noto Sans SC',system-ui,sans-serif;
+        color: rgba(255,255,255,.82); opacity: .28; transition: opacity .2s;
+        max-width: calc(100vw - 24px); box-sizing: border-box;
+      }
+      .preview-bar:hover, .preview-bar:focus-within { opacity: 1; }
+      .preview-bar button {
+        border: 1px solid rgba(255,255,255,.18); background: rgba(255,255,255,.08);
+        color: inherit; font: inherit; padding: 7px 11px; border-radius: 999px; cursor: pointer;
+        white-space: nowrap;
+      }
+      .preview-bar button:hover:not(:disabled) { background: rgba(255,255,255,.16); }
+      .preview-bar button.on { background: rgba(255,255,255,.9); color: #111; }
+      .preview-bar button:disabled { opacity: .4; cursor: default; }
+      .preview-bar .seek { width: 180px; accent-color: #fff; }
+      .preview-bar .seek:disabled, .preview-bar .vocal:disabled { opacity: .4; }
+      .preview-bar .label { opacity: .6; padding-left: 4px; font-variant-numeric: tabular-nums; }
+      .preview-bar .sep { width: 1px; align-self: stretch; background: rgba(255,255,255,.14); margin: 2px 2px; }
+      .preview-bar .vocal-wrap { display: flex; align-items: center; gap: 8px; }
+      .preview-bar .vocal { width: 130px; accent-color: #fff; }
+      .preview-bar .vocal-val {
+        min-width: 66px; opacity: .85; font-variant-numeric: tabular-nums;
+        white-space: nowrap;
+      }
+      /* 加载/错误提示 */
+      .preview-hint {
+        position: fixed; left: 50%; top: 18px; transform: translateX(-50%); z-index: 60;
+        padding: 8px 14px; border-radius: 999px;
+        background: rgba(12,12,14,.82); backdrop-filter: blur(14px);
+        border: 1px solid rgba(255,255,255,.12);
+        font: 500 12px/1 'Manrope','Noto Sans SC',system-ui,sans-serif;
+        color: rgba(255,255,255,.82); display: none;
+      }
+      .preview-hint.visible { display: block; }
+      .preview-hint.error { color: #ffb4b4; border-color: rgba(255,120,120,.4); }
+    </style>
+  </head>
+  <body>
+    <div id="preview"></div>
+    <div class="preview-hint" id="hint"></div>
+
+    <div class="preview-bar">
+      <button id="btn-play" disabled>播放</button>
+      <input id="seek" class="seek" type="range" min="0" max="1000" value="0" step="1" disabled title="进度" aria-label="进度" />
+      <span id="time" class="label">0:00 / 0:00</span>
+      <span class="sep"></span>
+      <div class="vocal-wrap">
+        <input id="vocal-level" class="vocal" type="range" min="0" max="100" value="100" step="1" disabled title="人声强度" aria-label="人声强度" />
+        <span class="vocal-val" id="vocal-value">人声 100%</span>
+      </div>
+      <span class="sep"></span>
+      <button id="btn-vocal" class="on" title="人声 100%">原曲</button>
+      <button id="btn-guide" title="人声 25%">引导</button>
+      <button id="btn-acc" title="人声 0%">伴奏</button>
+      <span class="sep"></span>
+      <button id="btn-mute" aria-pressed="false">静音</button>
+      <span class="sep"></span>
+      <button id="btn-word" aria-pressed="false" title="逐字高亮（需要 QQ 音乐逐字歌词）">逐字</button>
+      <span id="lyric-mode" class="label"></span>
+    </div>
+
+    <script src="/lyrics-view.js"></script>
+    <script src="/karaoke-mixer.js"></script>
+    <script>
+      // 预览页：KaraokeMixer 同时跑伴奏 + 人声两轨，滑块连续调节人声强度。
+      (function () {
+        'use strict';
+
+        const TRACK = '2JiDi0qAXsPwhPqA2qaKGt';
+        const ACCOMPANIMENT_URL = `/media/output/library/${TRACK}/accompaniment.mp3`;
+        const VOCALS_URL = `/media/output/library/${TRACK}/vocals.mp3`;
+        // 真实专辑封面（Spotify API 抓取后落盘），失败再回退 YouTube 缩略图
+        const ART = `/media/covers/${TRACK}.jpg`;
+        const ART_FALLBACK = 'https://i.ytimg.com/vi/fJ9rUzIMcZQ/maxresdefault.jpg';
+
+        // 快捷预设：按钮 → 人声百分比
+        const PRESETS = [
+          { key: 'original', el: document.getElementById('btn-vocal'), level: 100 },
+          { key: 'guide', el: document.getElementById('btn-guide'), level: 25 },
+          { key: 'accompaniment', el: document.getElementById('btn-acc'), level: 0 },
+        ];
+
+        const previewEl = document.getElementById('preview');
+        const hintEl = document.getElementById('hint');
+        const btnPlay = document.getElementById('btn-play');
+        const seekEl = document.getElementById('seek');
+        const timeEl = document.getElementById('time');
+        const vocalEl = document.getElementById('vocal-level');
+        const vocalValEl = document.getElementById('vocal-value');
+        const btnMute = document.getElementById('btn-mute');
+        const btnWord = document.getElementById('btn-word');
+        const lyricModeEl = document.getElementById('lyric-mode');
+
+        const SEEK_MAX = Number(seekEl.max) || 1000;
+
+        let view = null;
+        let mixer = null;
+        let ready = false;      // 两轨解码完成
+        let loading = false;
+        let seeking = false;    // 用户正拖动进度条 → 暂停回写，避免打架
+        let lastSeekInputAt = 0;
+
+        function fmt(sec) {
+          if (!Number.isFinite(sec) || sec < 0) return '0:00';
+          const m = Math.floor(sec / 60);
+          const s = Math.floor(sec % 60);
+          return `${m}:${String(s).padStart(2, '0')}`;
+        }
+
+        function setHint(message, isError) {
+          hintEl.textContent = message || '';
+          hintEl.classList.toggle('visible', Boolean(message));
+          hintEl.classList.toggle('error', Boolean(isError));
+        }
+
+        /** 统一入口：滑块 + 数值 + 快捷按钮高亮 + mixer，全部从这里走 */
+        function applyVocalPercent(percent) {
+          const pct = Math.max(0, Math.min(100, Math.round(Number(percent))));
+          if (vocalEl.value !== String(pct)) vocalEl.value = String(pct);
+          vocalValEl.textContent = `人声 ${pct}%`;
+          for (const preset of PRESETS) preset.el.classList.toggle('on', preset.level === pct);
+          if (mixer) mixer.setVocalLevel(pct / 100);
+          return pct;
+        }
+
+        function syncTimeUI(sec, duration) {
+          const dur = Number.isFinite(duration) ? duration : (mixer ? mixer.duration : 0);
+          if (!seeking && dur > 0) {
+            seekEl.value = String(Math.round((Math.max(0, Math.min(sec, dur)) / dur) * SEEK_MAX));
+          }
+          timeEl.textContent = `${fmt(sec)} / ${fmt(dur)}`;
+        }
+
+        function syncPlayButton(playing) {
+          btnPlay.textContent = playing ? '暂停' : '播放';
+          btnPlay.classList.toggle('on', playing);
+        }
+
+        function setControlsEnabled(enabled) {
+          ready = enabled;
+          btnPlay.disabled = !enabled;
+          seekEl.disabled = !enabled;
+          vocalEl.disabled = !enabled;
+          if (mixer) btnMute.disabled = false;
+        }
+
+        function seekTo(sec) {
+          if (!mixer || !ready) return;
+          lastSeekInputAt = Date.now();
+          mixer.seek(sec);
+          syncTimeUI(mixer.getCurrentTime(), mixer.duration);
+        }
+
+        async function pickArtwork() {
+          // 本地封面优先；不存在就用 YouTube 缩略图
+          const ok = await fetch(ART, { method: 'HEAD' }).then(r => r.ok).catch(() => false);
+          return ok ? ART : ART_FALLBACK;
+        }
+
+        // ---- 逐字歌词 ----
+        let lyricPayload = null;
+        let wordMode = false;
+
+        async function loadLyrics(wantWord) {
+          const params = new URLSearchParams({
+            videoId: 'fJ9rUzIMcZQ',
+            title: 'Queen - Bohemian Rhapsody',
+            duration: '359',
+          });
+          if (wantWord) params.set('wordLevel', '1');
+          try {
+            const r = await fetch('/api/lyrics/lookup?' + params);
+            return await r.json();
+          } catch {
+            return null;
+          }
+        }
+
+        /** 切到指定模式并重载歌词；返回是否真的有逐字数据 */
+        async function applyWordMode(want) {
+          btnWord.disabled = true;
+          lyricModeEl.textContent = '加载中…';
+          try {
+            const payload = await loadLyrics(want);
+            lyricPayload = payload;
+            const has = Boolean(payload && payload.wordLevel);
+            wordMode = want && has;
+            view.setLyrics(payload || { found: false, lines: [] });
+            view.setWordLevel(wordMode);
+            btnWord.classList.toggle('on', wordMode);
+            btnWord.setAttribute('aria-pressed', String(wordMode));
+            if (want && !has) {
+              lyricModeEl.textContent = '这首没有逐字歌词';
+            } else {
+              lyricModeEl.textContent = wordMode ? '逐字' : '行级';
+            }
+            return wordMode;
+          } finally {
+            btnWord.disabled = false;
+          }
+        }
+
+        async function boot() {
+          // 1) 默认先取行级歌词（快），逐字按需加载
+          const payload = await loadLyrics(false);
+          lyricPayload = payload;
+
+          // 2) 歌词视图：时间与跳转都直接对接 mixer
+          view = new window.LyricsView(previewEl, {
+            getCurrentTime: () => (mixer && ready ? mixer.getCurrentTime() : null),
+          });
+          view.onSeek = (sec) => seekTo(sec);
+          view.mount();
+          view.setArtwork(await pickArtwork());
+          view.setLyrics(payload || { found: false, lines: [] });
+          view.setLoading(false);
+          lyricModeEl.textContent = payload && payload.found ? '行级' : '';
+          btnWord.disabled = false;
+
+          // 3) 混音器：只构造，不自动播放（自动播放策略要求首次 play 在用户手势内）
+          mixer = new window.KaraokeMixer({
+            accompanimentUrl: ACCOMPANIMENT_URL,
+            vocalsUrl: VOCALS_URL,
+            onTimeUpdate: (sec, duration) => syncTimeUI(sec, duration),
+            onEnded: () => {
+              syncPlayButton(false);
+              mixedPausedAtEnd();
+            },
+          });
+
+          function mixedPausedAtEnd() {
+            if (!mixer) return;
+            syncTimeUI(mixer.getCurrentTime(), mixer.duration);
+          }
+
+          // 4) 控件接线（解码完成前禁用）
+          setControlsEnabled(false);
+          applyVocalPercent(100);
+          btnMute.disabled = true;
+          setHint('正在解码音频…');
+          loading = true;
+
+          btnPlay.onclick = async () => {
+            if (!ready || !mixer) return;
+            try {
+              if (mixer.playing) {
+                mixer.pause();
+                syncPlayButton(false);
+              } else {
+                // 必须在 click 手势里调用 → 浏览器允许 resume AudioContext
+                await mixer.play();
+                syncPlayButton(true);
+                setHint('');
+              }
+            } catch (error) {
+              console.error('[preview] play 失败', error);
+              setHint(`播放失败：${error.message || error}`, true);
+            }
+          };
+
+          seekEl.addEventListener('pointerdown', () => { seeking = true; });
+          window.addEventListener('pointerup', () => { seeking = false; });
+          seekEl.addEventListener('input', () => {
+            seeking = true;
+            lastSeekInputAt = Date.now();
+            if (!ready || !mixer) return;
+            const dur = mixer.duration;
+            if (dur > 0) seekTo((Number(seekEl.value) / SEEK_MAX) * dur);
+          });
+          seekEl.addEventListener('change', () => { seeking = false; });
+
+          vocalEl.addEventListener('input', () => {
+            applyVocalPercent(vocalEl.value);
+          });
+
+          for (const preset of PRESETS) {
+            preset.el.onclick = () => applyVocalPercent(preset.level);
+          }
+
+          btnMute.onclick = () => {
+            if (!mixer) return;
+            const next = !mixer.muted;
+            mixer.setMuted(next);
+            btnMute.classList.toggle('on', next);
+            btnMute.setAttribute('aria-pressed', String(next));
+            btnMute.textContent = next ? '取消静音' : '静音';
+          };
+
+          btnWord.onclick = async () => {
+            // 已加载逐字就就地开关，不重新请求
+            if (wordMode) {
+              wordMode = false;
+              view.setWordLevel(false);
+              btnWord.classList.remove('on');
+              btnWord.setAttribute('aria-pressed', 'false');
+              lyricModeEl.textContent = '行级';
+              return;
+            }
+            const payload = await loadLyrics(true);
+            const has = Boolean(payload && payload.wordLevel);
+            if (!has) {
+              lyricModeEl.textContent = '这首没有逐字歌词';
+              return;
+            }
+            lyricPayload = payload;
+            wordMode = true;
+            view.setLyrics(payload);
+            view.setWordLevel(true);
+            btnWord.classList.add('on');
+            btnWord.setAttribute('aria-pressed', 'true');
+            lyricModeEl.textContent = '逐字';
+          };
+
+          // 空格播放/暂停
+          window.addEventListener('keydown', (e) => {
+            if (e.code === 'Space' && !btnPlay.disabled) { e.preventDefault(); btnPlay.click(); }
+          });
+
+          // 5) 解码（13MB×2，需要几秒）
+          try {
+            await mixer.load();
+            setControlsEnabled(true);
+            loading = false;
+            setHint('');
+            syncTimeUI(0, mixer.duration);
+            syncPlayButton(false);
+            vocalEl.disabled = false;
+          } catch (error) {
+            console.error('[preview] 解码失败', error);
+            loading = false;
+            setControlsEnabled(false);
+            setHint(`音频加载失败：${error.message || error}`, true);
+          }
+        }
+
+        window.addEventListener('beforeunload', () => {
+          if (mixer) mixer.destroy();
+          if (view) view.destroy();
+        });
+
+        boot().catch((error) => {
+          console.error('[preview] boot 失败', error);
+          setHint(`预览初始化失败：${error.message || error}`, true);
+        });
+      })();
+    </script>
+  </body>
+</html>

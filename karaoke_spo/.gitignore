@@ -1,0 +1,25 @@
+node_modules/
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+
+# IDE
+.idea/
+
+# Runtime data and local configuration
+data/
+config/
+logs/
+*.log
+.tmp-*
+
+# Build output and downloaded binaries
+bin/
+dist/
+.package-test/
+
+# Environment files
+.env
+.env.*
+!.env.example

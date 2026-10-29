@@ -1,0 +1,273 @@
+/* ============================================================
+   视频 + 两行歌词（模式 B · playbackMode: 'video'）
+   规格来源：docs/playback-dual-mode.md
+
+   ┌────────────────────────────────────────┐
+   │           [Video 全屏铺满]              │
+   │                                        │
+   │   ▸ 正在唱的这句         ← 大，逐字高亮   │
+   │     下一句               ← 小，半透明     │
+   └────────────────────────────────────────┘
+
+   视频只是视觉层（muted），音频由 KaraokeMixer 播放。
+   逐字高亮复用 lyrics-view.css 的 .lv-chars / --lv-progress 方案。
+   ============================================================ */
+
+.vlm-stage {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 420px;
+  overflow: hidden;
+  border-radius: inherit;
+  background: #0a0a0c;
+  isolation: isolate;
+  color: #fff;
+  font-family: 'Manrope', 'Noto Sans SC', system-ui, -apple-system, sans-serif;
+  cursor: pointer;
+}
+
+/* 视频：铺满播放区（裁剪多余边） */
+.vlm-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center;
+  z-index: 0;
+  background: #000;
+  pointer-events: none;
+  /* 静音属性由 JS 保证；这里只是兜底，别让画面有音轨残留 */
+}
+
+/* 封面：视频未就绪时的底图，也是 video.mp4 缺失时的降级背景 */
+.vlm-cover {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background-color: #0a0a0c;
+  background-size: cover;
+  background-position: center;
+  transform: scale(1.04);
+}
+
+/* 没有视频时的画面：把专辑封面高斯模糊 + 拉伸铺满。
+   纯黑会让人以为大屏挂了；模糊封面既能填满画面，又不会抢歌词的注意力。
+   scale 放大一点是为了让模糊羽化的边缘不出黑边。 */
+.vlm-cover.is-blurred {
+  filter: blur(42px) saturate(1.35) brightness(.72);
+  transform: scale(1.22);
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  transition: opacity .45s ease;
+}
+
+/* 底部暗色渐变遮罩：保证歌词可读 */
+.vlm-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background:
+    linear-gradient(to top, rgba(0, 0, 0, .85), transparent 65%),
+    linear-gradient(180deg, rgba(0, 0, 0, .38), transparent 22%);
+}
+
+/* 歌词容器：固定底部，距底边约 12% */
+.vlm-lyrics {
+  position: absolute;
+  bottom: 12%;
+  left: 6%;
+  right: 6%;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: clamp(6px, .9vw, 16px);
+  pointer-events: none;
+  text-align: left;
+  text-shadow: 0 2px 18px rgba(0, 0, 0, .55), 0 1px 3px rgba(0, 0, 0, .45);
+}
+
+.vlm-line {
+  transform-origin: left bottom;
+  transition:
+    transform .5s cubic-bezier(.16, 1, .3, 1),
+    opacity .5s cubic-bezier(.16, 1, .3, 1),
+    font-size .5s cubic-bezier(.16, 1, .3, 1),
+    font-weight .3s cubic-bezier(.16, 1, .3, 1),
+    color .4s cubic-bezier(.16, 1, .3, 1);
+}
+
+.vlm-line .vlm-text {
+  display: block;
+  text-wrap: pretty;
+}
+
+.vlm-empty {
+  color: rgba(255, 255, 255, .55);
+  font-weight: 500;
+}
+
+/* ---- 当前行：大，白色，逐字高亮 ---- */
+.vlm-line.cur {
+  font-size: clamp(28px, 4vw, 64px);
+  font-weight: 700;
+  line-height: 1.18;
+  letter-spacing: -.015em;
+  color: #fff;
+}
+
+/* 切行入场：从下方升起并轻微放大（下一行升上来 → 变成当前行） */
+.vlm-line.cur.vlm-enter {
+  animation: vlm-rise .52s cubic-bezier(.16, 1, .3, 1) both;
+}
+
+@keyframes vlm-rise {
+  from { transform: translateY(28%) scale(.94); opacity: .35; }
+  to { transform: translateY(0) scale(1); opacity: 1; }
+}
+
+/* ---- 下一行：小，半透明 ---- */
+.vlm-line.next {
+  font-size: clamp(20px, 2.6vw, 40px);
+  font-weight: 500;
+  line-height: 1.24;
+  letter-spacing: -.01em;
+  color: rgba(255, 255, 255, .55);
+}
+
+/* 间隙期（两句之间）：当前行停留并轻微下沉淡化，表示"不再是正在唱的" */
+.vlm-stage.vlm-gap .vlm-line.cur {
+  opacity: .82;
+}
+
+/* ---- 逐字高亮：灰 → 白，按阅读顺序扫过 ----
+   为什么逐字切色而不是渐变遮罩：
+     mask-image 的渐变是横向的，作用在整个行盒上；一行折成两行时，
+     第二行会在同一个横向位置被照亮 → 看起来"两行同步滚"。
+     逐字给每个字算亮度，天然按阅读顺序推进，折行也能接着往下扫。
+   为什么不用 background-clip:text：
+     透明填充会关掉次像素抗锯齿，白字发虚（磨砂感）。
+     这里用的是 color，字是实心描绘的。
+   JS 在 _paint 里按 0–100 档写内联 color：#fff 或 rgba(255,255,255,.32~1)。 */
+.vlm-wordmode .vlm-line.cur .lv-ch {
+  color: rgba(255, 255, 255, .32);   /* 默认：未唱，明确的灰 */
+  transition: color .12s linear;     /* 相邻字之间柔化，形成连续的扫过感 */
+}
+
+/* 唱完的字：纯白兜底（JS 也会直接写 #fff） */
+.vlm-wordmode .vlm-line.cur .lv-ch.is-sung {
+  color: #fff;
+}
+/* 当前行未逐字时也是普通白字；加一点投影，亮画面上也看得清 */
+.vlm-line.cur .lv-text {
+  color: #fff;
+  text-shadow: 0 2px 14px rgba(0, 0, 0, .55);
+}
+
+/* 下一行永远不做逐字渐变（避免两行都是花字） */
+.vlm-wordmode .vlm-line.next .lv-chars,
+.vlm-line.next .lv-chars {
+  background-image: none;
+  -webkit-text-fill-color: currentColor;
+  color: inherit;
+}
+
+.vlm-line .lv-ch { display: inline; white-space: pre-wrap; }
+
+/* 间奏空行 */
+.vlm-line .lv-dots {
+  color: rgba(255, 255, 255, .42);
+  letter-spacing: .22em;
+}
+
+.vlm-line.cur .lv-dots { color: rgba(255, 255, 255, .72); }
+
+/* ---- 状态提示（没有视频 / 歌词无时间轴） ---- */
+.vlm-status {
+  position: absolute;
+  left: 50%;
+  top: 14px;
+  transform: translateX(-50%) translateY(-4px);
+  z-index: 3;
+  padding: 7px 14px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, .48);
+  color: rgba(255, 255, 255, .82);
+  font-size: 12px;
+  letter-spacing: .02em;
+  opacity: 0;
+  pointer-events: none;
+  white-space: nowrap;
+  max-width: 80%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: opacity .25s ease, transform .25s ease;
+}
+
+.vlm-status.visible {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+/* 沉浸模式：鼠标静止后状态提示也一起消失（人声条同理，见 styles.css） */
+#player:not(.ui-awake) .vlm-status.visible { opacity: 0; }
+
+/* DJ 关掉「视频歌词」：整块歌词淡出，画面只剩视频。
+   用 opacity 而不是 display:none，切换时有个过渡，不会突然跳。 */
+.vlm-stage.vlm-no-lyrics .vlm-lyrics { opacity: 0; pointer-events: none; }
+.vlm-stage .vlm-lyrics { transition: opacity .3s ease; }
+
+/* ---- 人声强度滑块：叠在视频上方（app.js 的 .vocal-control 会挂进这个 slot） ---- */
+.vlm-vocal-slot {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 18px;
+  z-index: 4;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.vlm-vocal-slot > * {
+  pointer-events: auto;
+}
+
+/* 视频模式里人声滑块贴底居中（.vocal-control 默认就是 absolute，这里改正它与歌词重叠太多） */
+.vlm-vocal-slot .vocal-control {
+  position: static;
+  transform: none;
+  opacity: .32;
+}
+
+.vlm-vocal-slot .vocal-control:hover,
+.vlm-vocal-slot .vocal-control:focus-within { opacity: 1; }
+
+/* 歌词模式 / YouTube 模式下的 video 容器：不需要内边距 */
+.player-frame.video-mode { padding: 0; overflow: hidden; position: relative; }
+
+/* 视频模式宿主：填满 player-frame */
+.vlm-host {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+  position: relative;
+}
+
+/* 同 .lv-host：放进播放器时取消 420px 最小高度，避免顶穿整页 */
+.vlm-host .vlm-stage { min-height: 0; }
+
+/* ---- 窄屏 ---- */
+@media (max-width: 900px) {
+  .vlm-lyrics {
+    bottom: 16%;
+    left: 5%;
+    right: 5%;
+  }
+  .vlm-line.cur { font-size: clamp(24px, 7vw, 44px); }
+  .vlm-line.next { font-size: clamp(17px, 4.6vw, 28px); }
+}

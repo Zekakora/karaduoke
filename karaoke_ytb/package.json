@@ -1,0 +1,13 @@
+{
+  "name": "karaoke-ytb-online",
+  "version": "0.3.8",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "start": "node main.js",
+    "dev": "node --watch main.js"
+  },
+  "dependencies": {
+    "qrcode": "^1.5.4"
+  }
+}

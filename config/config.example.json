@@ -1,0 +1,32 @@
+{
+  "language": "zh",
+  "service": {
+    "port": 3100,
+    "host": "0.0.0.0"
+  },
+  "djPassword": "",
+  "youtubeApiKey": "",
+  "spotify": {
+    "clientId": "",
+    "clientSecret": "",
+    "redirectUri": "",
+    "refreshToken": "",
+    "scope": ""
+  },
+  "env": {
+    "dir": "",
+    "python": "",
+    "cache": "",
+    "bin": ""
+  },
+  "tunnel": {
+    "cloudflaredPath": "",
+    "fixedPublicUrl": "",
+    "autoStart": false
+  },
+  "mode": {
+    "active": "B",
+    "rootA": "",
+    "rootB": ""
+  }
+}

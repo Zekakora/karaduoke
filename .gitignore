@@ -1,0 +1,43 @@
+# ── 依赖 ──────────────────────────────────────────────────────────────
+node_modules/
+
+# ── 控制面板的运行时数据 ──────────────────────────────────────────────
+# config/ 里有真实密钥（DJ 密码 / YouTube Key / Spotify clientSecret + refreshToken），
+# 只放行脱敏模板 config.example.json。
+config/*
+!config/config.example.json
+logs/
+*.log
+.tmp-*
+*.tmp
+.acl-recovery/
+.backup/
+
+# ── 运行环境：Python 虚拟环境 / 模型缓存 / 二进制工具（体积大，不入库）──
+env/
+
+# ── 生成 / 下载的媒体（可由 pipeline 重新生成，不入库）────────────────
+karaoke_spo/assets/
+karaoke_spo/tmp/
+karaoke_spo/.tmp/
+karaoke_ytb/assets/
+karaoke_ytb/tmp/
+karaoke_ytb/.tmp/
+
+# ── 编辑器 / 系统垃圾 ────────────────────────────────────────────────
+.idea/
+.vscode/
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# ── 一次性草稿 / 合并前备份 ──────────────────────────────────────────
+# 根目录下划线开头的临时脚本（如 _server_new.txt、_envperf.js）；
+# 想正式保留就移到 scripts\ 并去掉下划线前缀。
+/_*.js
+/_*.txt
+*.before-merge
+*.orig
+
+# ── 整理时移出的文件（确认无用后整个删除）────────────────────────────
+rubbish/
