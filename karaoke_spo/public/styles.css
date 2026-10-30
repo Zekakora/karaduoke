@@ -577,26 +577,6 @@ html[data-theme="night"] .btn.pin-on { background:#f0b429; color:#241a00; }
 .lib-match-spinner { width:12px; height:12px; border-radius:50%; border:2px solid rgba(13,148,136,.25); border-top-color:#0d9488; animation: lib-match-spin .8s linear infinite; }
 @keyframes lib-match-spin { to { transform: rotate(360deg); } }
 .lib-match.is-running { padding:8px 10px; border:1px solid var(--line); border-radius:10px; background:var(--paper); }
-/* 官方 API 配额用完 / 限流中：按钮**变红但不禁用** —— 点下去弹二次确认，确认后强行重试。
-   （以前这里是禁用 + 一行"今天配额已用完"的文字，DJ 想手动再试一次都没入口。） */
-.lib-match #lib-match-start.is-limited {
-  background:#dc2626; color:#fff; border-color:#dc2626;
-  box-shadow:0 1px 0 rgba(0,0,0,.06);
-}
-.lib-match #lib-match-start.is-limited:hover { background:#b91c1c; border-color:#b91c1c; }
-.lib-match #lib-match-start.is-limited:disabled { opacity:.5; background:#dc2626; }
-.lib-match-flag {
-  display:inline-block; margin-left:6px; padding:1px 6px; border-radius:99px;
-  font-size:11px; font-weight:800; letter-spacing:.02em;
-  background:rgba(255,255,255,.22); color:#fff;
-}
-html[data-theme="night"] .lib-match #lib-match-start.is-limited { background:#b91c1c; border-color:#ef4444; color:#fff; }
-html[data-theme="night"] .lib-match #lib-match-start.is-limited:hover { background:#dc2626; }
-/* 候选列表里标出"这个候选来自哪个源" */
-.mv-source {
-  display:inline-block; margin-left:6px; padding:1px 6px; border-radius:99px;
-  font-size:10px; font-weight:800; background:rgba(13,148,136,.12); color:#0d9488;
-}
 
 /* 「清理残留」弹窗：分组勾选清单 */
 .oc-summary { font-size:13px; font-weight:700; color:var(--ink); margin:10px 0; }

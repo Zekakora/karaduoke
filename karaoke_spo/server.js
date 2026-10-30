@@ -15,8 +15,6 @@ const spotify = require('./lib/spotify.js');
 // 与音频侧（fetch_audio 的 sourceVideoId + MP4）完全独立，见 docs/official-mv.md。
 const officialMv = require('./lib/official-mv.js');
 const youtube = require('./lib/youtube.js');
-// 免配额的官方 MV 源（ytmusicapi）。它不可用时，official-mv.js 会自动退回官方 Data API。
-const ytmusic = require('./lib/ytmusic.js');
 const { PrepareQueue } = require('./lib/prepare-queue.js');
 const { MatchWorker } = require('./lib/match-worker.js');
 const queueOrder = require('./lib/queue-order.js');
@@ -572,9 +570,7 @@ function queueSongsNeedingMv() {
 
 /** 启动一轮 MV 解析（不阻塞调用方；同一首歌同时只跑一次） */
 function maybeStartMvResolve() {
-  // 官方 API 没 Key **且** YouTube Music 源也不可用时才放弃 ——
-  // 只要还有一个源能用，就还能匹配到官方 MV（ytmusicapi 不需要任何 Key / 配额）。
-  if (!youtube.hasKey() && !ytmusic.enabled()) return;
+  if (!youtube.hasKey()) return;
   const targets = queueSongsNeedingMv().filter((id) => !mvResolving.has(id));
   for (const spotifyId of targets) {
     resolveMvFor(spotifyId).catch((error) => {
@@ -1451,8 +1447,6 @@ async function handleApi(req, res, url) {
         pendingThreshold: officialMv.CONFIG.pendingThreshold,
         apiKeyConfigured: youtube.hasKey(),
         quota: youtube.quota(),
-        // 免配额的官方 MV 源（ytmusicapi）是否可用 —— 前端据此判断"配额用完还能不能匹配"
-        ytmusic: ytmusic.status(),
       };
     }
     return sendJson(res, 200, data);
@@ -1467,7 +1461,6 @@ async function handleApi(req, res, url) {
         job: matcher.toPublic(),
         candidates: collectMatchCandidates({ kinds }).length,
         query: youtube.quota(),
-        ytmusicAvailable: ytmusic.enabled(),
       });
     }
     if (method === 'POST' && pathname === '/api/library/admin/match/cancel') {
@@ -1477,21 +1470,12 @@ async function handleApi(req, res, url) {
       const body = await readBody(req);
       const kinds = (Array.isArray(body.kinds) ? body.kinds : ['mv', 'lyrics'])
         .map(String).filter((k) => k === 'mv' || k === 'lyrics');
-      // force = 管理员在「配额已用完」的红色按钮上二次确认后的强行重试。
-      // 这时先清掉我们自己设的限流冷却，让官方 API 真的再试一次
-      // （万一 Google 那边已经恢复了，不该用昨天的判断一直挡着）。
-      const force = body.force === true || body.force === 'true';
-      let quotaReset = false;
-      if (force) quotaReset = youtube.clearCooldown().cleared;
-      // 官方 API 限流/配额用完 → 先告诉前端（按钮变红 + 二次确认），
-      // 不要起一个注定全程"跳过"的批次；管理员确认后带 force 再来。
+      // 今天 YouTube 搜索配额已用完 → 直接告诉前端，不要起一个注定全程"跳过"的批次
       const q = youtube.quota();
-      if (kinds.includes('mv') && q.rateLimited && !force) {
+      if (kinds.includes('mv') && q.rateLimited) {
         return sendJson(res, 200, {
           ok: true, started: false, reason: q.exhausted ? 'quota-exhausted' : 'rate-limited',
           job: matcher.toPublic(), count: 0, quota: q,
-          // 前端据此决定弹窗文案：有免配额源时，强行重试基本能成
-          ytmusicAvailable: ytmusic.enabled(),
         });
       }
       const requested = Array.isArray(body.spotifyIds) && body.spotifyIds.length
@@ -1508,11 +1492,8 @@ async function handleApi(req, res, url) {
       if (!started.ok) {
         return sendJson(res, 409, { ok: false, reason: started.reason, job: started.job, code: 'MATCH_ALREADY_RUNNING' });
       }
-      console.log(`[match] 一键匹配开始：${items.length} 首（${kinds.join('+')}）${force ? ' [强行重试]' : ''}`);
-      return sendJson(res, 200, {
-        ok: true, started: true, count: items.length, kinds, job: started.job,
-        forced: force, quotaReset, ytmusicAvailable: ytmusic.enabled(),
-      });
+      console.log(`[match] 一键匹配开始：${items.length} 首（${kinds.join('+')}）`);
+      return sendJson(res, 200, { ok: true, started: true, count: items.length, kinds, job: started.job });
     }
   }
   // ---- 官方 MV 管理（曲库管理页「MV」列 + 弹窗）----
@@ -1540,7 +1521,6 @@ async function handleApi(req, res, url) {
         queryTemplates: officialMv.QUERY_TEMPLATES,
         // 被 YouTube 限流时前端要能提示"暂停搜索、X 秒后自动恢复"
         quota: youtube.quota(),
-        ytmusic: ytmusic.status(),
       },
     });
   }
@@ -2558,12 +2538,8 @@ function restorePrepareJobs() {
   // 丢了队列项、但任务还在跑（用户已删歌）的情况：任务继续，不需要额外处理
   if (restored || requeued) console.log(`[prepare] 恢复后台任务：jobs=${restored} requeued=${requeued}`);
   else if (prepareQueue.pending.length) console.log(`[prepare] 待执行任务 ${prepareQueue.pending.length} 个`);
-  // 队列里的歌如果还没匹配过官方 MV，顺手补一次（与音频处理并行）
-  if (!youtube.hasKey() && !ytmusic.enabled()) {
-    console.log('[mv] 未配置 YouTube API Key，且 YouTube Music 源不可用：官方 MV 匹配跳过，视频模式用模糊封面');
-  } else if (ytmusic.enabled()) {
-    console.log('[mv] 官方 MV 首选源：YouTube Music（ytmusicapi，免配额）；官方 Data API 兜底');
-  }
+  // 队列里的歌如果还没匹配过官方 MV，顺手补一次（只调 YouTube Data API，与音频处理并行）
+  if (!youtube.hasKey()) console.log('[mv] 未配置 YouTube API Key：官方 MV 匹配跳过，视频模式用模糊封面');
   resumeIdleQueueOnBoot();
   schedulePrepareSync();
 }
