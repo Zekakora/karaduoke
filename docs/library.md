@@ -48,6 +48,24 @@ t    = get_track(conn, "...")                     # dict，artists 已解析为 
 | `add_lyrics` / `get_lyrics` | 同 `(track_id, provider)` 为 UPDATE；不指定 provider 时优先返回带时间轴的那份 |
 | `list_tracks(conn, status=None, limit=100, offset=0)` | 过滤 + 分页，按 `updated_at DESC, id DESC` |
 | `count_tracks` / `library_summary` / `log_job` / `get_jobs` | 统计与日志 |
+| `get_visual` / `update_visual` | 官方 MV（`visual_*`）读写；`manually_confirmed` 不会被自动匹配覆盖 |
+
+### 官方 MV（`visual_*`）
+
+| 列 | 说明 |
+| --- | --- |
+| `visual_video_id` | 官方 MV 的 YouTube videoId（11 位）；**与 `source_video_id`（音频处理用）无关** |
+| `visual_match_status` | `pending`（默认）/ `auto_matched` / `manually_confirmed` / `not_found` / `unavailable` |
+| `visual_match_score` | 0–100 评分 |
+| `visual_video_title` / `visual_channel_title` / `visual_duration` | 视频元数据 |
+| `visual_match_reason` | 评分明细或失败原因 |
+| `visual_matched_at` | 匹配时间 |
+| `visual_candidates` | JSON：上次搜索的候选（管理员挑选用） |
+
+迁移在 `_MIGRATIONS` / `_migrate()`，可重复执行。注意 `init_db()` **先迁移再执行 schema.sql**：
+`schema.sql` 里给 `visual_video_id` 建索引，而 `CREATE TABLE IF NOT EXISTS` 不会给老表加列，
+顺序反过来会让老库报 `no such column`。老曲目迁移后自动是 `pending`。
+详细规则见 [official-mv.md](./official-mv.md)。
 
 ### 状态机
 
@@ -61,19 +79,24 @@ new → resolving → resolved → downloading → downloaded → separating →
 ## CLI
 
 ```powershell
-python\.venv-xpu\Scripts\python.exe python\library.py init
-python\.venv-xpu\Scripts\python.exe python\library.py summary
-python\.venv-xpu\Scripts\python.exe python\library.py list --status separated --limit 20
-python\.venv-xpu\Scripts\python.exe python\library.py add-demo
+..\env\python\Scripts\python.exe python\library.py init
+..\env\python\Scripts\python.exe python\library.py summary
+..\env\python\Scripts\python.exe python\library.py list --status separated --limit 20
+..\env\python\Scripts\python.exe python\library.py add-demo
 ```
 
-## HTTP 只读接口
+## HTTP 接口
 
 | 路由 | 返回 |
 | --- | --- |
 | `GET /api/library/summary` | `{tracks, byStatus, withStems, withLyrics, withSyncedLyrics, withAudio, audioBytes}` |
-| `GET /api/library/tracks?status=&limit=&offset=` | `{total, limit, offset, status, tracks[]}`；非法 status → 400 `BAD_STATUS` |
-| `GET /api/library/tracks/:spotifyId` | `{track, stems[], lyrics, jobs[]}`；不存在 → 404 `NOT_FOUND` |
+| `GET /api/library/tracks?q=&limit=&all=1` | `{available, total, tracks[]}`（只给 ready 曲目，`all=1` 含未就绪） |
+| `GET /api/library/tracks/:spotifyId` | 曲目详情：`{spotifyId, title, …, sourceVideoId, audio:{4 轨}, visual:{visualVideoId, visualMatchStatus, …}, visualVideoId, visualMatchStatus}`；不存在 → 404 |
+| `GET /api/library/admin` | DJ：全部曲目 + 处理状态 + 歌词 + **MV 列**（`visualVideoId / visualMatchStatus / visualMatchScore / visualVideoTitle / visualChannelTitle / visualDuration / visualMatchReason`）+ `visualCounts` |
+| `GET/POST /api/library/admin/tracks/:id/mv` | DJ：官方 MV 查看 / 搜索 / 选候选 / 手填 / 确认 / 清除（见 [official-mv.md](./official-mv.md)） |
+| `POST /api/display/visual-error` | 大屏上报 MV 放不出来 → 状态写 `unavailable` |
+
+`sourceVideoId`（音频来源）与 `visualVideoId`（官方 MV）是两个独立字段，前端不能互相替代。
 
 实现：`server.js` 用 Node 24 内置 `node:sqlite` 的 `DatabaseSync` 以**只读**方式打开同一个 `data/library.db`。
 不 spawn 子进程（受限环境 `spawn` 会 `EPERM`，`node --test` 因此也不可用，改用 `node tests\run.js`）。
@@ -84,7 +107,7 @@ python\.venv-xpu\Scripts\python.exe python\library.py add-demo
 
 ```powershell
 $env:PYTHONIOENCODING='utf-8'
-python\.venv-xpu\Scripts\python.exe tests\test_library.py
+..\env\python\Scripts\python.exe tests\test_library.py   # 11 passed（含 MV 迁移 / 读写 / 与 source 独立）
 ```
 
 测试全部使用 `tempfile.mkdtemp()` 下的临时库，不污染 `data/library.db`。

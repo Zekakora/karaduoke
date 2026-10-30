@@ -19,8 +19,8 @@
 | --- | --- | --- | --- |
 | A：YouTube | 视频 | ✅ 现状 | 直接嵌 YouTube 卡拉OK视频 |
 | A：YouTube | 歌词 | ✅ 已实现 | 只有音频，歌词按标题查 |
-| B：本地 Demucs | 歌词 | ⬜ 待做 | 模式 B 的最终形态 |
-| B：本地 | 视频 | ❌ 无意义 | 没有视频 |
+| B：本地 Demucs | 歌词 | ✅ 已实现 | 仿 Apple Music 歌词页 |
+| B：本地 Demucs | 视频 | ✅ 已实现 | **背景用 YouTube 官方 MV**（`visual_video_id`，IFrame 静音在线播放）；本地不保存/不播放 `video.mp4` |
 
 ---
 
@@ -45,13 +45,18 @@
 控制台 / admin
   └─ 搜索框  →  GET /api/spotify/search  →  Spotify Web API（client_credentials）
        └─ 点"点歌"  →  写 SQLite tracks（spotify_id 唯一，去重）
-            └─ 后台任务（异步）
-                 1. resolve   : Spotify 元数据 → YouTube 匹配（时长/歌手评分）→ yt-dlp 下载
-                 2. transcode : → 44.1kHz/16bit/stereo WAV
-                 3. separate  : Demucs htdemucs on XPU → drums/bass/other/vocals
-                 4. lyrics    : lrclib → QQ 降级 → 写 lyrics 表
-                 5. encode    : 4 轨 → MP3 320k（省 77%）
-            └─ display 页  →  <audio> 播本地文件 + Web Audio 混音 + 歌词视图
+            ├─ 后台任务（音频，异步）
+            │    1. resolve   : Spotify 元数据 → YouTube 匹配（时长/歌手评分）→ 下载媒体
+            │    2. transcode : → 44.1kHz/16bit/stereo WAV（Demucs 输入）
+            │    3. separate  : Demucs htdemucs on XPU → drums/bass/other/vocals
+            │    4. lyrics    : QQ → 网易云 → lrclib 降级 → 写 lyrics 表
+            │    5. encode    : 4 轨 → MP3 320k（省 77%）
+            │    6. cleanup   : 4 个 MP3 确认合格后，删除临时 WAV
+            │
+            └─ 官方 MV（并行，独立）
+                  OFFICIAL-MV : Spotify 元数据 → 搜索/评分 → visual_video_id
+                                （YouTube IFrame 静音在线播放，不下载、不落盘）
+            └─ display 页  →  KaraokeMixer 播本地 MP3 + 官方 MV 背景 + 歌词视图
 ```
 
 ### 关键设计约束

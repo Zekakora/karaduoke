@@ -52,7 +52,7 @@ Karaduoke\
 | 人声调节 | 不支持（音轨已混好） | **支持**：原曲 / 引导 / 伴奏 无级调节 |
 | 逐字歌词 | 行级 | **逐字**（QQ QRC + 网易云 YRC） |
 | 离线可用 | 否 | **是**（歌曲已存本地） |
-| 播放画面 | YouTube 播放器 / 歌词 | 视频 + 两行歌词 / 仿 Apple Music |
+| 播放画面 | YouTube 播放器 / 歌词 | **YouTube 官方 MV（静音）+ 两行歌词** / 仿 Apple Music |
 | 磁盘占用 | ~55 MB | ~7 GB |
 | 依赖 | 纯 Node，零 npm 依赖 | Node + Python(demucs/torch) |
 
@@ -100,7 +100,7 @@ karaoke_spo\
 │  │  ├─ vocals.mp3          人声（用于原唱/引导开关）
 │  │  ├─ guide.mp3           引导（人声压低）
 │  │  ├─ original.mp3        原声
-│  │  └─ video.mp4           视频（1080p H.264，部分歌有）
+│  │                            （视频画面不存本地：YouTube 官方 MV 静音在线播放）
 │  ├─ covers\<spotifyId>.jpg        专辑封面
 │  └─ lyrics\                       歌词文件
 ├─ data\
@@ -273,6 +273,7 @@ karaoke_spo\config\              旧配置（应已移入 rubbish\）
 - `lyrics-yrc-qq-fix.md` — QQ/YRC 逐字歌词修复记录
 - `background-download.md` — 后台下载与制作队列
 - `playback-dual-mode.md` / `playback-modes.md` — 视频 / Apple Music 两种播放画面
+- `official-mv.md` — 官方 MV（visualVideoId）的匹配算法、数据库字段、管理接口与回退逻辑
 - `player-ui-spec.md` — 播放器界面规格
 - `pipeline-mode-b.md` — 下载与分离流水线
 - `vocal-mix.md` — 人声混音原理

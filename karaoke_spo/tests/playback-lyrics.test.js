@@ -182,6 +182,18 @@ const json = (url, options) => fetch(url, options).then(async (res) => ({ status
       assert.ok(code.includes("playbackMode === 'lyrics'"), '应判断 playbackMode');
       assert.ok(code.includes('admin-playback-mode'), '控制台应有切换项');
     });
+
+    await test('视频模式：MV 用 visualVideoId，不再引用本地 video.mp4', async () => {
+      const code = await (await fetch(`${BASE}/app.js`)).text();
+      assert.ok(code.includes('visualVideoId'), '视频模式应使用 visualVideoId');
+      assert.ok(!code.includes('video.mp4'), '前端不应再引用本地 video.mp4');
+      assert.ok(code.includes('/api/display/visual-error'), 'MV 播放失败应能上报服务端');
+      const view = await (await fetch(`${BASE}/video-lyrics-mode.js`)).text();
+      assert.ok(view.includes('visualVideoId'), 'VideoLyricsMode 应接受 visualVideoId');
+      assert.ok(view.includes('onVideoError'), 'VideoLyricsMode 应把播放失败通知外部');
+      assert.ok(!/<video\b/.test(view), '不应再有本地 <video> 元素');
+      assert.ok(view.includes('mute: 1'), 'YouTube 播放器必须静音');
+    });
   } finally {
     // 恢复用户原本的播放模式
     try { await patch({ playbackMode: originalMode }); } catch { /* 忽略 */ }

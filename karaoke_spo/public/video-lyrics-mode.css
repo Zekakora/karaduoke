@@ -3,13 +3,14 @@
    规格来源：docs/playback-dual-mode.md
 
    ┌────────────────────────────────────────┐
-   │           [Video 全屏铺满]              │
+   │        [YouTube 官方 MV 铺满（静音）]    │
    │                                        │
    │   ▸ 正在唱的这句         ← 大，逐字高亮   │
    │     下一句               ← 小，半透明     │
    └────────────────────────────────────────┘
 
-   视频只是视觉层（muted），音频由 KaraokeMixer 播放。
+   背景是 YouTube IFrame（静音），没有 MV / 不可用时换成模糊专辑封面。
+   音频始终由 KaraokeMixer 播放（本地 MP3）。
    逐字高亮复用 lyrics-view.css 的 .lv-chars / --lv-progress 方案。
    ============================================================ */
 
@@ -20,59 +21,137 @@
   min-height: 420px;
   overflow: hidden;
   border-radius: inherit;
-  background: #0a0a0c;
-  isolation: isolate;
+  /* 底色用"极深但不纯黑"，即使封面/MV 都没出来也不会像死机。
+     封面层是 z-index:0（正数），所以这里不需要 isolation。 */
+  background: #101014;
   color: #fff;
   font-family: 'Manrope', 'Noto Sans SC', system-ui, -apple-system, sans-serif;
   cursor: pointer;
 }
 
-/* 视频：铺满播放区（裁剪多余边） */
-.vlm-video {
+/* 官方 MV（YouTube IFrame，静音）：铺满播放区的背景层。
+
+   实现方式：容器按 16:9 撑到"盖满"播放区，居中后由 .vlm-mv 的 overflow:hidden
+   裁掉多余部分 —— 等价于 object-fit: cover。iframe 是 YouTube 官方正常尺寸的播放器
+   （不隐藏、不缩小），只是被裁切铺满。
+
+   层级（**全部正数**，必须这样排，否则会互相遮挡）：
+     .vlm-cover  z-index: 0   模糊封面（最底）
+     .vlm-mv     z-index: 1   MV
+     .vlm-scrim  z-index: 2   底部渐变（只占下方 2/5）
+     .vlm-lyrics z-index: 3   歌词
+     .vlm-vocal-slot z-index: 10  悬浮工具栏
+   * 踩过的两个坑：
+     ① 封面用 z-index:-1 + stage 有 isolation → 负层反而盖住 MV；
+     ② 封面 z-index:-1 而没有 isolation → 跑到 stage 自身 background 后面，
+        屏幕上就是一整块纯黑（"模糊封面变成纯黑色"）。
+   * 尺寸用 `top/left/width/height: 0` 撑满 .vlm-mv 的 padding box
+     （inset/百分比高度在 grid/flex 里会按内容算，实测 iframe 只有 859×249）。 */
+/* 交叉淡化：
+   * 默认 MV 层 opacity:0（不可见但**仍在播放**，YouTube 需要真正播放几秒画面才稳定）；
+   * 模糊封面 opacity:1 顶着画面；
+   * MV 稳定播放后，JS 给 .vlm-stage 加 `vlm-mv-on` → 封面在 ~1.2s 内淡出、MV 同步淡入。
+   这样不会出现"加载时黑屏 / 刚出首帧就闪一下"。 */
+.vlm-mv {
   position: absolute;
   inset: 0;
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  object-position: center;
-  z-index: 0;
-  background: #000;
-  pointer-events: none;
-  /* 静音属性由 JS 保证；这里只是兜底，别让画面有音轨残留 */
+  z-index: 1;              /* 在封面之上、遮罩之下 */
+  overflow: hidden;
+  background: transparent;
+  opacity: 0;
+  /* 和封面淡出用同一个时长（10s），两边同步交叉，中间不会出现"变暗"的塌陷 */
+  transition: opacity 10s ease;
+  /* 让 YouTube 控件可点（用户点画面能直接控制 MV） */
+  pointer-events: auto;
 }
 
-/* 封面：视频未就绪时的底图，也是 video.mp4 缺失时的降级背景 */
+.vlm-stage.vlm-mv-on .vlm-mv { opacity: 1; }
+
+.vlm-mv[hidden] { display: none; }
+
+/* 16:9 cover 适配：宽 = max(容器宽, 容器高 × 16/9)，高 = max(容器高, 容器宽 × 9/16)。
+   用 vw/vh 不合适（播放区不是整页），所以用 aspect-ratio + 双向 min 撑满再裁。 */
+.vlm-mv-frame {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 100%;
+  height: 100%;
+  aspect-ratio: 16 / 9;
+  min-width: 100%;
+  min-height: 100%;
+  max-width: none;
+  max-height: none;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+/* YT.Player 会**用 iframe 替换宿主 div**，并把宿主上的 id 挪到 iframe 上
+   （实测：`<div id="vlm-yt-1" class="vlm-yt-host">` 变成
+   `<iframe id="vlm-yt-1" width="640" height="360">`）。
+   所以不能写 `.vlm-yt-host iframe`（宿主已经不存在了，选择器永远匹配不到，
+   iframe 会保持 YouTube 默认的 640×360 小窗）。这里用 id 前缀 + 兜底选择器。 */
+.vlm-mv-frame [id^="vlm-yt-"],
+.vlm-mv-frame .vlm-yt-host,
+.vlm-mv-frame iframe {
+  position: absolute !important;
+  top: 0 !important;
+  left: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  border: 0;
+  display: block;
+  pointer-events: auto;
+  min-height: 0 !important;
+}
+
+/* 封面层：**必须 z-index:0**（不能是 -1）。
+   -1 在"没有 isolation 的 stage"里会跑到 `.vlm-stage` 自身 background 的**后面**，
+   于是模糊封面被那层 #0a0a0c 盖住 → 屏幕上就是一整块纯黑（"疑似变成纯黑色"）。
+   层级全部用非负值：封面 0 < MV 1 < 遮罩 2 < 歌词 3 < 工具栏 10。 */
 .vlm-cover {
   position: absolute;
   inset: 0;
-  z-index: -1;
+  z-index: 0;
   background-color: #0a0a0c;
   background-size: cover;
   background-position: center;
   transform: scale(1.04);
+  opacity: 1;
+  /* 交叉淡化的时长（JS 在 MV 稳定播放 5s 后给 stage 加 vlm-mv-on） */
+  transition: opacity 10s ease;
 }
 
-/* 没有视频时的画面：把专辑封面高斯模糊 + 拉伸铺满。
+/* MV 露出来后：模糊封面**淡出**（不是硬切）。
+   注意：不要把 opacity/transition 写进下面的 `.is-blurred` —— 那条规则在文件里出现得更晚，
+   同优先级会覆盖上面的 transition，于是变成"咔"一下消失（用户反馈的硬切效果）。 */
+.vlm-stage.vlm-mv-on .vlm-cover { opacity: 0; }
+
+/* 没有 MV 时的画面：把专辑封面高斯模糊 + 拉伸铺满。
    纯黑会让人以为大屏挂了；模糊封面既能填满画面，又不会抢歌词的注意力。
-   scale 放大一点是为了让模糊羽化的边缘不出黑边。 */
+   scale 放大一点是为了让模糊羽化的边缘不出黑边。
+   这里**只写滤镜和背景**，不碰 opacity / transition。 */
 .vlm-cover.is-blurred {
   filter: blur(42px) saturate(1.35) brightness(.72);
   transform: scale(1.22);
   background-size: cover;
   background-position: center;
   background-repeat: no-repeat;
-  transition: opacity .45s ease;
+  /* 保险：显式声明，避免被任何后来的规则改回硬切 */
+  transition: opacity 10s ease;
 }
 
-/* 底部暗色渐变遮罩：保证歌词可读 */
+/* 底部暗色渐变遮罩：保证歌词可读。
+   只占**下方 2/5**（需求：上面 3/5 留干净，视频更清楚）。 */
 .vlm-scrim {
   position: absolute;
-  inset: 0;
-  z-index: 1;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 40%;
+  z-index: 2;
   pointer-events: none;
-  background:
-    linear-gradient(to top, rgba(0, 0, 0, .85), transparent 65%),
-    linear-gradient(180deg, rgba(0, 0, 0, .38), transparent 22%);
+  background: linear-gradient(to top, rgba(0, 0, 0, .88) 0%, rgba(0, 0, 0, .55) 45%, transparent 100%);
 }
 
 /* 歌词容器：固定底部，距底边约 12% */
@@ -81,7 +160,7 @@
   bottom: 12%;
   left: 6%;
   right: 6%;
-  z-index: 2;
+  z-index: 3;
   display: flex;
   flex-direction: column;
   gap: clamp(6px, .9vw, 16px);
@@ -110,7 +189,8 @@
   font-weight: 500;
 }
 
-/* ---- 当前行：大，白色，逐字高亮 ---- */
+/* ---- 当前行：大，白色 ---- */
+/* 字号恢复成原版大小（之前为了给 MV 腾地方改小了，导致切行时"涨大"的动效不明显） */
 .vlm-line.cur {
   font-size: clamp(28px, 4vw, 64px);
   font-weight: 700;
@@ -119,9 +199,39 @@
   color: #fff;
 }
 
-/* 切行入场：从下方升起并轻微放大（下一行升上来 → 变成当前行） */
+/* ==== 两种「点亮」方式的区别（这是用户最在意的）====
+
+   逐行（wordLevel = 关 / 这首歌没有逐字数据）：
+     整行**同时**变亮。唱这一行时整行从灰 → 白，切到下一行时上一行整行保持白、
+     新的一行整行变白。JS 维护 .vlm-line.cur 上的 `is-sung`（正在唱这一行）。
+   逐字（wordLevel = 开 + 有 chars）：
+     这一行被拆成 .lv-ch，每个字**按自己的发音时间**单独由灰变白，从左往右扫过。
+     JS 给每个 .lv-ch 写内联 color，.vlm-wordmode 下生效。
+   下面两组规则是互斥的：.vlm-line.cur.is-word 表示当前行按字渲染。 */
+
+/* 逐行：正在唱的整行 = 纯白；还没唱到 = 偏灰（下一行的样式另算） */
+.vlm-line.cur.is-sung { color: #fff; }
+.vlm-line.cur:not(.is-word) { transition: color .25s ease; }
+
+/* 逐字：整行容器仍是白字，但每个字由 JS 按进度写 color */
+.vlm-wordmode .vlm-line.cur.is-word > .vlm-text { color: inherit; }
+
+/* 切行入场：从下方升起并轻微放大（下一行升上来 → 变成当前行）。
+   两组效果同时存在，**缺一不可**：
+     1. animation 负责"升起 + 放大"（.52s）；
+     2. transition 负责字号变化（上一行小 → 当前行大）的平滑过渡。
+   但 `.vlm-line` 上的 `transition: transform ...` 会和 animation 抢同一个 transform，
+   过渡会把 keyframes 首帧吃掉 → 动画直接不播（硬切）。
+   所以这里只**去掉 transform / opacity 的过渡**（交给 animation），
+   font-size / font-weight / color 的过渡必须留着 ——
+   之前偷懒写成 `transition: color .4s ease`，把字号过渡也一起关了，
+   结果切行时字号"啪"地跳变，观感就和原版不一样了。 */
 .vlm-line.cur.vlm-enter {
   animation: vlm-rise .52s cubic-bezier(.16, 1, .3, 1) both;
+  transition:
+    font-size .5s cubic-bezier(.16, 1, .3, 1),
+    font-weight .3s cubic-bezier(.16, 1, .3, 1),
+    color .4s cubic-bezier(.16, 1, .3, 1);
 }
 
 @keyframes vlm-rise {
@@ -136,6 +246,20 @@
   line-height: 1.24;
   letter-spacing: -.01em;
   color: rgba(255, 255, 255, .55);
+}
+
+/* ---- 下一行的轻微淡入（换行时"即将唱的那句"冒出来）----
+   只做很小的位移（8%）+ 淡入，幅度明显小于当前行的"升起"，不抢主角。
+   注意：`.vlm-line` 自带 transform/opacity 的 transition，会和 animation 抢同一个属性
+   （抢了就不播了），所以动画期间把这两项从 transition 里去掉。 */
+@keyframes vlm-next-in {
+  from { opacity: 0; transform: translateY(8%); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.vlm-line.next.vlm-next-enter {
+  animation: vlm-next-in .36s cubic-bezier(.16, 1, .3, 1) both;
+  transition: color .4s ease;
 }
 
 /* 间隙期（两句之间）：当前行停留并轻微下沉淡化，表示"不再是正在唱的" */
@@ -185,7 +309,7 @@
 
 .vlm-line.cur .lv-dots { color: rgba(255, 255, 255, .72); }
 
-/* ---- 状态提示（没有视频 / 歌词无时间轴） ---- */
+/* ---- 状态提示（MV 加载中 / MV 不可用 / 歌词无时间轴） ---- */
 .vlm-status {
   position: absolute;
   left: 50%;
@@ -215,20 +339,27 @@
 /* 沉浸模式：鼠标静止后状态提示也一起消失（人声条同理，见 styles.css） */
 #player:not(.ui-awake) .vlm-status.visible { opacity: 0; }
 
-/* DJ 关掉「视频歌词」：整块歌词淡出，画面只剩视频。
+/* DJ 关掉「视频歌词」：整块歌词淡出，画面只剩 MV。
    用 opacity 而不是 display:none，切换时有个过渡，不会突然跳。 */
 .vlm-stage.vlm-no-lyrics .vlm-lyrics { opacity: 0; pointer-events: none; }
 .vlm-stage .vlm-lyrics { transition: opacity .3s ease; }
 
-/* ---- 人声强度滑块：叠在视频上方（app.js 的 .vocal-control 会挂进这个 slot） ---- */
+/* ---- 悬浮工具栏（人声滑块 + 逐字/逐行 + 预设）：叠在 MV 上方 ----
+   app.js 的 .vocal-control 会挂进这个 slot。
+
+   两个必须点：z-index 要**高于 MV iframe**（iframe 是独立文档，会吃掉点击），
+   而且不能被沉浸模式（#player 没有 .ui-awake 时 opacity:0 + pointer-events:none）
+   藏起来 —— 实测就是这个原因导致"逐字/逐行点了没反应"：按钮位置下面其实是 iframe。 */
+/* slot 只是一个"定位参照点"：工具栏在它里面**水平+垂直居中**，
+   并且完全不参与布局流 —— 这样沉浸模式（opacity/translate 过渡）不会让工具栏
+   上下弹动（之前把 slot 放在 bottom:18px 且给了 flex，过渡时位置会跟着变）。 */
 .vlm-vocal-slot {
   position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 18px;
-  z-index: 4;
+  inset: 0;
+  z-index: 10;            /* > 歌词(3) / 遮罩(2) / MV(1) / 封面(0) */
   display: flex;
-  justify-content: center;
+  align-items: center;     /* 垂直居中（原行为） */
+  justify-content: center; /* 水平居中（原行为） */
   pointer-events: none;
 }
 
@@ -236,21 +367,38 @@
   pointer-events: auto;
 }
 
-/* 视频模式里人声滑块贴底居中（.vocal-control 默认就是 absolute，这里改正它与歌词重叠太多） */
+/* 视频模式里工具栏贴底居中（与原来一致），注意力不抢画面 */
 .vlm-vocal-slot .vocal-control {
-  position: static;
-  transform: none;
-  opacity: .32;
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  margin: 0;
+  z-index: 10;
+  /* 沉浸可见性完全交回 styles.css 的 .vocal-control / #player.ui-awake 规则：
+     这里不再写 opacity / pointer-events，避免两套规则互相打架（会"弹来弹去"）。 */
 }
 
-.vlm-vocal-slot .vocal-control:hover,
-.vlm-vocal-slot .vocal-control:focus-within { opacity: 1; }
+/* MV 显示出来时工具栏要给个底，避免按钮落在亮画面上看不清 */
+.vlm-stage.vlm-mv-on .vlm-vocal-slot .vocal-control {
+  background: rgba(10, 12, 16, .82);
+  border-color: rgba(255, 255, 255, .22);
+}
 
 /* 歌词模式 / YouTube 模式下的 video 容器：不需要内边距 */
 .player-frame.video-mode { padding: 0; overflow: hidden; position: relative; }
 
-/* 视频模式宿主：填满 player-frame */
+/* 视频模式宿主：填满 player-frame。
+
+   注意 .player-frame 是 `display:grid; place-items:center` —— 子项默认按内容尺寸
+   居中，不会拉伸。所以宿主必须显式占满整格（align/justify-self: stretch），
+   否则 .vlm-stage 会缩成内容大小（实测 681×249），MV 被裁得只剩一条。
+   `.player-frame iframe { min-height:420px }` 也是为模式 A 的 YouTube 写的，
+   对 MV 背景不适用，这里显式覆盖掉。 */
 .vlm-host {
+  grid-area: 1 / 1;
+  align-self: stretch;
+  justify-self: stretch;
   width: 100%;
   height: 100%;
   min-height: 0;
@@ -258,8 +406,16 @@
   position: relative;
 }
 
-/* 同 .lv-host：放进播放器时取消 420px 最小高度，避免顶穿整页 */
-.vlm-host .vlm-stage { min-height: 0; }
+.vlm-host .vlm-stage {
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.player-frame.video-mode { display: block; }
+.player-frame.video-mode .vlm-host { display: block; height: 100%; }
+.player-frame.video-mode .vlm-host iframe { min-height: 0; }
+.vlm-host .vlm-yt-host iframe { min-height: 0 !important; }
 
 /* ---- 窄屏 ---- */
 @media (max-width: 900px) {

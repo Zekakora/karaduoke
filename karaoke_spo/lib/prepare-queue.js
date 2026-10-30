@@ -28,20 +28,41 @@
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
-const { ENV_DIR, firstExisting } = require('./env');
+const { ENV_DIR } = require('./env');
 
 const ROOT = path.resolve(__dirname, '..');
 const JOBS_FILE = path.join(ROOT, 'data', 'prepare-jobs.json');
 const LOG_DIR = path.join(ROOT, 'logs');
 
 // Python 解释器：控制面板注入的 KARAOKE_PYTHON 优先，
-// 其次根目录 env\python，最后回退到旧布局 karaoke_spo\python\.venv-xpu。
-const DEFAULT_PYTHON = firstExisting([
+// 其次根目录 env\python，最后回退到旧布局 karaoke_spo\python\.venv-xpu / .venv。
+//
+// 注意：`firstExisting` 在"全都不存在"时返回**第一个候选**（即 process.env.KARAOKE_PYTHON，
+// 未设置时就是 undefined）。以前直接把它当解释器路径用，spawn 出来的错误是
+// `spawn undefined ENOENT`，每首歌都"处理失败"却看不出原因。这里显式做三件事：
+//   1. 环境变量为空时回退到 env\python 的真实路径（而不是空字符串）；
+//   2. 所有候选都转成绝对路径，避免 cwd 变化时解析到别处；
+//   3. 启动时打印一行"用的哪个 Python / 是否存在"，没有就直接指向安装方式。
+// 另一个坑：直接 `node karaoke_spo/main.js` 启动时不会经过启动器，
+// ENV_DIR 会退化成 `karaoke_spo\env\`（不存在），所以额外找**项目根**的 env\python。
+const PYTHON_CANDIDATES = [
   process.env.KARAOKE_PYTHON,
   path.join(ENV_DIR, 'python', 'Scripts', 'python.exe'),
+  path.join(ROOT, 'env', 'python', 'Scripts', 'python.exe'),
+  path.join(ROOT, '..', 'env', 'python', 'Scripts', 'python.exe'),
   path.join(ROOT, 'python', '.venv-xpu', 'Scripts', 'python.exe'),
   path.join(ROOT, 'python', '.venv', 'Scripts', 'python.exe'),
-]);
+].filter((candidate) => Boolean(candidate && String(candidate).trim()));
+
+function resolvePython() {
+  for (const candidate of PYTHON_CANDIDATES) {
+    const abs = path.isAbsolute(candidate) ? candidate : path.resolve(ROOT, candidate);
+    try { if (fs.existsSync(abs)) return abs; } catch { /* ignore */ }
+  }
+  return PYTHON_CANDIDATES.length ? path.resolve(ROOT, PYTHON_CANDIDATES[0]) : '';
+}
+
+const DEFAULT_PYTHON = resolvePython();
 const DEFAULT_STEPS = 'metadata,download,lyrics,separate,finalize';
 
 /**
@@ -56,7 +77,13 @@ function normalizeConcurrency(value) {
   return Math.min(4, Math.max(1, n));
 }
 
-/** 阶段顺序 + 每个阶段在整体进度里的起点百分比 */
+/**
+ * 阶段顺序 + 每个阶段在整体进度里的起点百分比。
+ *
+ * `mv`（官方 MV 匹配）是**并行**阶段：由 server.js 在本进程里跑（只调 YouTube Data API，
+ * 不占 GPU），与 pipeline.py 子进程同时进行。它的成败**不影响**音频制作：
+ * 失败时 job 仍是 ready，只是 job.mv 里记下原因，大屏回退模糊封面。
+ */
 const STAGES = [
   { key: 'queued', label: '排队中', percent: 0 },
   { key: 'metadata', label: '读取元数据', percent: 5 },
@@ -64,6 +91,7 @@ const STAGES = [
   { key: 'lyrics', label: '匹配歌词', percent: 30 },
   { key: 'separate', label: '分离音轨', percent: 40 },
   { key: 'finalize', label: '生成成品', percent: 92 },
+  { key: 'mv', label: '匹配官方 MV', percent: 96 },
   { key: 'done', label: '完成', percent: 100 },
 ];
 const STAGE_PERCENT = Object.fromEntries(STAGES.map((s) => [s.key, s.percent]));
@@ -124,9 +152,13 @@ class PrepareQueue {
   constructor(opts = {}) {
     this.jobsFile = opts.jobsFile || JOBS_FILE;
     this.logDir = opts.logDir || LOG_DIR;
-    this.pythonExe = opts.pythonExe || process.env.KARAOKE_PYTHON || DEFAULT_PYTHON;
+    // 显式传入 > 环境变量 > 自动探测（必须是**存在**的路径，见文件顶部 resolvePython 的说明）
+    this.pythonExe = opts.pythonExe
+      || (process.env.KARAOKE_PYTHON && String(process.env.KARAOKE_PYTHON).trim())
+      || DEFAULT_PYTHON;
     this.projectRoot = opts.projectRoot || ROOT;
-    this.steps = opts.steps || DEFAULT_STEPS;
+    // 步骤可以由调用方指定，也允许用环境变量覆盖（排查问题时只跑 metadata,download，不必等 Demucs）
+    this.steps = opts.steps || String(process.env.KARAOKE_PREPARE_STEPS || '').trim() || DEFAULT_STEPS;
     this.concurrency = normalizeConcurrency(opts.concurrency ?? process.env.KARAOKE_PREPARE_CONCURRENCY);
     this.disableSpawn = Boolean(opts.disableSpawn);
     this.onChange = typeof opts.onChange === 'function' ? opts.onChange : () => {};
@@ -222,6 +254,8 @@ class PrepareQueue {
       pid: job.pid || null,
       restarts: job.restarts || 0,
       cancelRequested: Boolean(job.cancelRequested),
+      // 官方 MV 并行阶段的结果（重启后保留，避免重复搜索）
+      mv: job.mv || null,
       createdAt: job.createdAt || null,
       updatedAt: job.updatedAt || null,
     }));
@@ -410,7 +444,46 @@ class PrepareQueue {
       restarts: job.restarts || 0,
       createdAt: job.createdAt || null,
       updatedAt: job.updatedAt || null,
+      // 官方 MV（并行阶段）：{state:'running'|'done'|'failed', status, visualVideoId, reason}
+      mv: job.mv ? { ...job.mv } : null,
     };
+  }
+
+  // ------------------------------------------------------------ 官方 MV（并行阶段）
+  /**
+   * 记录"正在匹配官方 MV"。由 server 在派发 MV 搜索前调用。
+   * 这是**并行**阶段：音频 pipeline 照常在跑，任务状态仍是 running。
+   */
+  markMvRunning(spotifyId) {
+    const job = this.jobs.get(String(spotifyId || ''));
+    if (!job) return null;
+    job.mv = { state: 'running', updatedAt: nowIso() };
+    this._changed(job, { mv: true });
+    return this.toPublic(job);
+  }
+
+  /**
+   * 记录官方 MV 匹配结果。**不改变** job.status（MV 失败不等于制作失败）。
+   * @param {{status?: string, visualVideoId?: string|null, reason?: string, skipped?: boolean}} result
+   */
+  setMvResult(spotifyId, result = {}) {
+    const job = this.jobs.get(String(spotifyId || ''));
+    if (!job) return null;
+    job.mv = {
+      state: result.skipped ? 'done' : result.error ? 'failed' : 'done',
+      status: result.status || null,
+      visualVideoId: result.visualVideoId || null,
+      reason: result.reason || result.error || null,
+      updatedAt: nowIso(),
+    };
+    this._changed(job, { mv: true });
+    return this.toPublic(job);
+  }
+
+  /** 当前没有 finish 的 MV 阶段是否还在跑（server 用来避免重复派发） */
+  isMvPending(spotifyId) {
+    const job = this.jobs.get(String(spotifyId || ''));
+    return Boolean(job && job.mv && job.mv.state === 'running');
   }
 
   /**
@@ -486,6 +559,17 @@ class PrepareQueue {
         return;
       }
 
+      // 解释器不存在时直接给出可操作的错误，而不是让 spawn 抛一个看不懂的 ENOENT，
+      // 更不要把它记到"这首歌"头上（那是环境问题，重试同一首歌也没用）。
+      if (!this.pythonExe || !fs.existsSync(this.pythonExe)) {
+        const hint = `找不到 Python 解释器：${this.pythonExe || '(空)'}。`
+          + '请用项目根的启动器（启动卡拉OK）启动服务，或在控制面板「环境配置」里指定 Python 路径；'
+          + '也可以手动设置环境变量 KARAOKE_PYTHON 指向 env\\python\\Scripts\\python.exe。';
+        this._onChildExit(job, null, null, hint);
+        done();
+        return;
+      }
+
       const args = ['scripts/pipeline.py', '--spotify-id', job.spotifyId, '--steps', this.steps];
       let child;
       try {
@@ -493,6 +577,15 @@ class PrepareQueue {
           cwd: this.projectRoot,
           env: {
             ...process.env,
+            // 显式把"自己解析出来的 ENV_DIR"传给 Python，原因有两个：
+            //   * 直接 `node karaoke_spo/main.js` 启动时没有启动器注入 KARAOKE_ENV_DIR，
+            //     pipeline 里的 ffmpeg 会按旧路径找不到；
+            //   * 打包后 env\ 可能在项目根而不是工程根。
+            KARAOKE_ENV_DIR: ENV_DIR,
+            KARAOKE_PYTHON: this.pythonExe,
+            KARAOKE_BIN_DIR: path.join(ENV_DIR, 'bin'),
+            KARAOKE_FFMPEG: path.join(ENV_DIR, 'bin', 'ffmpeg.exe'),
+            KARAOKE_FFPROBE: path.join(ENV_DIR, 'bin', 'ffprobe.exe'),
             PYTHONIOENCODING: 'utf-8',
             PYTHONUNBUFFERED: '1',
             TORCH_HOME: process.env.TORCH_HOME || path.join(ENV_DIR, 'cache', 'torch'),

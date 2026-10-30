@@ -1,6 +1,7 @@
 # 播放画面双模式
 
-> 2026-10-29 需求澄清。模式 B 的 display 页支持两种画面，在 admin 切换。
+> 2026-10-29 需求澄清；2026-10-30 **视频背景改为 YouTube 官方 MV**（不再用本地 MP4）。
+> 模式 B 的 display 页支持两种画面，在 admin 切换。
 
 ## 两种画面
 
@@ -9,8 +10,7 @@
 ```
 ┌────────────────────────────────────────┐
 │                                        │
-│                                        │
-│           [YouTube 720p 视频]           │
+│      [YouTube 官方 MV（静音）]          │
 │                                        │
 │                                        │
 │   ▸ 正在唱的这句         ← 大，逐字高亮   │
@@ -18,7 +18,8 @@
 └────────────────────────────────────────┘
 ```
 
-- 视频**静音**（`<video muted>`）
+- 背景是 **YouTube 官方 MV**（IFrame Player API，`youtube-nocookie.com`），**永远静音**
+- 没有 MV / 匹配中 / 视频不可用 → 自动换成 **模糊专辑封面**
 - 音频走 **KaraokeMixer**（伴奏 + 人声，人声强度可调）
 - 歌词只显示**当前行 + 下一行**，固定位置（距底边约 12%）
 - 逐字高亮沿用 QRC 数据
@@ -27,146 +28,105 @@
 
 现有界面：左列专辑封面（居中），右列滚动歌词多行。
 
-## 关键约束：视频必须静音
+## 关键约束：MV 必须静音
 
-**视频音轨不用。** 原因：
+**YouTube 的声音不用。** 原因：
 
-| 若用视频音轨 | 若用 MP3 混音 |
+| 若用 YouTube 的声音 | 若用 MP3 混音 |
 | --- | --- |
-| 音画天然同步 | 需要手动对齐 |
+| 音画天然同步 | 不必同步（MV 只是背景） |
 | **人声强度滑块失效** | **人声强度可调**（模式 B 核心功能） |
 
 模式 B 的存在意义就是「伴奏/人声可调」，所以必须走 MP3。
-技术上：
+YouTube 播放器按官方要求正常显示（`controls:1`，不隐藏、不缩小），只是被容器裁剪放大铺满。
 
-```html
-<video muted playsinline src="/media/output/library/<id>/video.mp4"></video>
-```
+### 为什么不再保存本地 `video.mp4`
 
-混音器同时播 `accompaniment.mp3` + `vocals.mp3`，时间轴以 mixer 为准。
+旧方案从**音频来源**那个 YouTube 视频里再下一份 720p/1080p、剥掉音轨当背景。
+问题：那本来就是"为了抽音频"的视频（经常是 Audio/Lyric 版，甚至不是官方频道），
+画面和"官方 MV"不是一回事；而且每首歌多占 20–35 MB。
+
+现在改为：
+
+| 资源 | 要不要 | 说明 |
+| --- | --- | --- |
+| 音频处理用的临时媒体文件 | 要 | 下载 → 抽 44.1k WAV；成片成功后由 pipeline 删除 |
+| 最终 4 个 MP3 | 要 | KaraokeMixer 播放，长期保留 |
+| 官方 MV | **在线播放** | 只存 `visualVideoId`，YouTube IFrame 静音播放，不下载 |
+| 本地背景 `video.mp4` | **不要** | 已移除（`--keep-video` / `add_video.py` / 前端引用一并删除） |
+
+官方 MV 的搜索、匹配、管理见 [official-mv.md](./official-mv.md)。
 
 ### 同步策略
 
-`<video>` 作为纯视觉层，由 mixer 驱动：
+MV 作为纯视觉层，**不跟随时间轴**：
 
-```js
-// mixer 的 onTimeUpdate 里校正视频
-const drift = Math.abs(video.currentTime - mixer.getCurrentTime());
-if (drift > 0.3) video.currentTime = mixer.getCurrentTime();
-```
-
-阈值 0.3 秒：小于这个值肉眼看不出来，频繁 seek 反而卡顿。
-
-暂停/播放/跳转全部作用于 mixer，视频跟随。
-
-## 视频规格
-
-| 项 | 值 |
+| 本地音频 | YouTube MV |
 | --- | --- |
-| 分辨率 | **1280×720** |
-| 容器 | MP4 |
-| 编码 | H.264 (avc1) |
-| 音频 | **不保留**（`-an`），省空间 |
-| 体积 | 约 33 MB/首（实测 Bohemian Rhapsody） |
+| Play / Pause / Resume | 跟随播放 / 暂停 / 继续 |
+| Stop、歌曲结束 | `stopVideo()` |
+| 切歌 | 销毁旧播放器，加载新 MV |
+| MV 比歌短 | `onStateChange === ENDED` 时 `loadVideoById` 从头循环 |
+| MV 比歌长 | 随歌结束停止 |
 
-存储位置：`assets/output/library/<spotifyId>/video.mp4`
+不通过 `currentTime` 强制校正，也不频繁 `seekTo()`（那既卡顿、也没必要）。
+
+### 失败回退
+
+以下任一情况立刻回退模糊专辑封面，**不影响**本地音频与歌词：
+没有 videoId、尚未匹配、`not_found` / `unavailable`、非法 id、
+IFrame API 加载失败、播放器 ready 超时（9s）、`onError`（2/5/100/101/150）、
+网络错误、播放中视频被删除或转私密。
+
+失败时会 `POST /api/display/visual-error`，服务端把 `visual_match_status` 写成
+`unavailable`，下次不再自动加载同一个坏视频。
 
 ## 存储体积影响
 
-| 项 | 之前 | 之后 |
+| 项 | 旧方案 | 现在 |
 | --- | --- | --- |
 | 4 个 MP3 | 54.9 MB | 54.9 MB |
-| video.mp4 | — | ~33 MB |
-| **每首合计** | **54.9 MB** | **~88 MB** |
-
-4 首歌从 159.5 MB → 约 260 MB。
-
-## 流水线改动
-
-### `fetch_audio.py` 新增 `--keep-video`
-
-下载步骤除了抽音频，再下一份 720p 视频（去音轨）：
-
-```python
-video_opts = {
-    'format': 'bestvideo[height<=720][ext=mp4]+worstaudio/bestvideo[height<=720][ext=mp4]',
-    'outtmpl': str(video_path),
-    'quiet': True,
-}
-# 再 ffmpeg 去掉音轨
-ffmpeg -i raw.mp4 -an -c:v copy video.mp4
-```
-
-**注意**：先下带音轨的（yt-dlp 需要音轨才能完整下载），再用 ffmpeg `-an` 剥掉。
-
-### 存量补齐
-
-现有 4 首需要补视频。写个脚本批量处理：
-
-```powershell
-python\.venv-xpu\Scripts\python.exe scripts\add_video.py --all
-```
-
-读取 `tracks.source_video_id` 拿 YouTube ID，下载对应视频。
+| 本地 video.mp4 | +20~35 MB/首 | **0** |
+| 官方 MV | — | 0（在线播放） |
+| 音频处理输入 WAV | 留到下次处理 | 成片成功后删除 |
 
 ## 前端实现
 
-### 目录
-
 ```
 public/
-├── display-video-mode.js    ← 新增：视频 + 两行歌词
-├── lyrics-view.js           ← 现有：Apple Music 风格
-└── karaoke-mixer.js         ← 现有：音频混音
+├── video-lyrics-mode.js   ← 视频画面：MV iframe + 两行歌词（本文档）
+├── video-lyrics-mode.css
+├── lyrics-view.js         ← Apple Music 风格
+├── karaoke-mixer.js       ← 音频混音
+└── app.js                 ← 两类画面的挂载 / 切换 / MV 失败上报
 ```
-
-### `display-video-mode.js` 结构
 
 ```js
-class VideoLyricsMode {
-  constructor(root, { videoUrl, lyrics, onSeek })
-  mount()          // 创建 <video> + 歌词容器
-  setLyrics(payload)  // 载入歌词（含 chars）
-  update(tSec)     // 由 mixer.onTimeUpdate 驱动
-  destroy()
-}
+new VideoLyricsMode(root, {
+  visualVideoId,            // 官方 MV（null → 模糊封面）
+  coverUrl,                 // 专辑封面（回退用）
+  duration,
+  onSeek: sec => mixer.seek(sec),      // 点画面只动本地音频
+  onVideoError: d => reportVisualError(spotifyId, d),
+});
 ```
 
-`update()` 逻辑：
-1. 二分查找当前行
-2. 更新当前行文字（逐字进度用 CSS 变量 `--lv-progress`）
-3. 更新下一行文字
-4. 校正视频时间（drift > 0.3s 才 seek）
+`update(tSec)` 只驱动歌词；MV 的播放/暂停由 `setPlaying(bool)` 驱动。
 
 ### admin 切换
 
-`playbackMode` 下拉已有两个选项（video / lyrics），在模式 B 下**现在被隐藏了**——要恢复显示。
-
 | 值 | 画面 |
 | --- | --- |
-| `video` | 视频 + 两行歌词 |
+| `video` | 官方 MV（静音）+ 两行歌词 |
 | `lyrics` | 仿 Apple Music |
-
-**注意**：模式 B 的默认值要从 `'lyrics'` 改回 `'video'`（用户要的主模式是视频）。
-
-## 歌词数据
-
-复用 `GET /api/lyrics/lookup?videoId=&title=&duration=&wordLevel=1`
-
-- `wordLevel=1` → QQ 逐字 QRC（有 `chars` 数组）
-- 失败回落 lrclib 行级
-
-两行显示时：
-- 当前行：用 `chars` 做逐字高亮
-- 下一行：纯文本，不逐字
 
 ## 验证清单
 
-- [ ] `fetch_audio.py --keep-video` 能下到 720p MP4 并剥掉音轨
-- [ ] 存量 4 首补齐视频
-- [ ] `GET /media/output/library/<id>/video.mp4` 返回 200 + Range 支持
-- [ ] admin 里能切换两种模式
-- [ ] 视频模式：视频播放、静音、歌词两行、逐字高亮、人声滑块可用
-- [ ] Apple Music 模式：原样不变
-- [ ] 音画同步：seek 后 0.3s 内对齐
-- [ ] 回归测试全过
+- [x] 有 `visualVideoId` → 创建 IFrame 播放器，且静音
+- [x] 没有 / 非法 / 未匹配 → 不初始化播放器，显示模糊封面
+- [x] play / pause / resume 跟随；歌曲结束 `stopVideo`
+- [x] MV 比歌短 → 循环；MV 比歌长 → 随歌停
+- [x] 切歌销毁旧播放器
+- [x] 不可用 / 网络错误 → 回退封面，歌词与音频不受影响，并上报 `unavailable`
+- [x] 不再引用 `/media/output/library/<id>/video.mp4`
+- [ ] 现场大屏上人工确认一遍 MV 画面与歌词可读性（需联网 + 真机）
