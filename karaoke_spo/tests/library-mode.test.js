@@ -80,13 +80,28 @@ const json = (url, opts) => fetch(url, opts).then(async (r) => ({ status: r.stat
     });
 
     await test('曲库搜索按标题过滤', async () => {
-      const { body } = await json(`${BASE}/api/library/tracks?q=bohemian`);
+      // 演示曲目 Bohemian Rhapsody 早期就在曲库里；如果现场曲库没有它，
+      // 就退而用曲库里第一首 ready 曲目的标题做过滤，避免测试依赖具体数据。
+      let { body } = await json(`${BASE}/api/library/tracks?q=bohemian`);
+      if (!body.tracks.length) {
+        const first = (await json(`${BASE}/api/library/tracks`)).body.tracks[0];
+        assert.ok(first, '曲库为空，无法测试搜索');
+        const word = String(first.title).split(/\s+/)[0];
+        ({ body } = await json(`${BASE}/api/library/tracks?q=${encodeURIComponent(word)}`));
+        assert.ok(body.tracks.length >= 1, `按 "${word}" 搜不到任何曲目`);
+        assert.ok(body.tracks.every((t) => `${t.title} ${(t.artists || []).join(' ')}`.toLowerCase().includes(word.toLowerCase())));
+        return;
+      }
       assert.strictEqual(body.tracks.length, 1);
       assert.ok(/bohemian/i.test(body.tracks[0].title));
     });
 
     await test('单曲详情返回 4 个音轨', async () => {
-      const { status, body } = await json(`${BASE}/api/library/tracks/2JiDi0qAXsPwhPqA2qaKGt`);
+      // 不再写死 spotifyId：曲库里的曲目会变（用过就删、重新处理），
+      // 取库里第一首 ready 的曲目来验证结构才稳定。
+      const list = (await json(`${BASE}/api/library/tracks`)).body.tracks;
+      assert.ok(list.length, '曲库为空，无法测试单曲详情');
+      const { status, body } = await json(`${BASE}/api/library/tracks/${list[0].spotifyId}`);
       assert.strictEqual(status, 200);
       assert.deepStrictEqual(Object.keys(body.audio).sort(), ['accompaniment', 'guide', 'original', 'vocals']);
     });

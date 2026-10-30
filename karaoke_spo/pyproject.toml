@@ -2,4 +2,6 @@
 name = "karaok"
 version = "0.1.0"
 requires-python = ">=3.12"
-dependencies = []
+# ytmusicapi：官方 MV 的免配额候选源（scripts/ytmusic_mv.py）。
+# 它不是硬依赖——没装时 lib/ytmusic.js 会自动退回官方 YouTube Data API。
+dependencies = ["ytmusicapi>=1.7"]

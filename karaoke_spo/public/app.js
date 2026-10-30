@@ -173,8 +173,54 @@ Object.assign(commonI18n.de, { eventName:'Eventname', standby:'Standby', transit
 // 原先这里是一个独立的 libraryI18n 字典；为了不让 i18n 出现两套机制，
 // 已把这些 key 并入 commonI18n（localeText 读的那份），libraryText 只作兼容包装。
 Object.assign(commonI18n.zh, { libEyebrow:'LIBRARY · 模式 B', libIntro:'所有曲目的处理状态、耗时、文件大小与匹配分。点歌触发的下载与分离会在这里实时显示阶段。', libLoading:'正在读取曲库…', libOpenDisplay:'打开大屏 ↗', libRematchTitle:'重新匹配歌词', libClose:'关闭', libTrackTitle:'歌名', libTrackArtist:'歌手', libArtistsHint:'多个歌手用逗号分隔', libRematchHint:'改动只影响歌词搜索，不会改曲库里的曲目信息。', libRematchSearch:'搜索歌词', libCancel:'取消', libTitleRequired:'歌名不能为空', libSearchingLyrics:'搜索中…', libMatched:'✅ 匹配成功：{provider} · {kind} · {lines} 行', libLyricsUpdated:'歌词已更新，播放时立即生效', libNoLyricsFound:'❌ 没搜到歌词。试试把歌名改得更短、或换一种写法（比如去掉括号里的后缀）。', libRematchFailed:'❌ 失败：{error}', libUnknownError:'未知错误', libNoLyrics:'无歌词', libWordLevel:'逐字', libLineLevel:'行级', libPlainText:'纯文本', libStatusProcessed:'已处理', libStatusProcessing:'处理中', libStatusPending:'待处理', libStatusFailed:'处理失败', libStatusCanceled:'已取消', libQueued:'排队中', libUnavailable:'曲库不可用：', libHeading:'曲库管理', libDesc:'每首歌的处理状态、耗时、文件大小与匹配分。点歌触发的下载/分离会在这里显示实时阶段。', libSummary:'{total} 首 · 已处理 {processed} · 处理中 {processing} · 待处理 {pending} · 失败 {failed}', libFilterPlaceholder:'按歌名 / 歌手 / 专辑筛选', libRefresh:'刷新', libColTrack:'曲目', libColStatus:'状态', libColLyrics:'歌词', libColDuration:'耗时', libColSize:'大小', libColMatch:'匹配分', libColActions:'操作', libErrorReason:'原因：', libStop:'停止', libStopTitle:'中止后台制作（仅 DJ）', libRematchShort:'改词重搜', libRematchShortTitle:'改歌名/歌手后重新搜歌词', libDelete:'删除', libDeleteTitle:'从曲库删除（含产物文件）', libEmpty:'没有匹配的曲目', libDeleteConfirm:'从曲库删除「{title}」？会同时删除成品音频、视频、封面、歌词和原始下载文件。', libDeleted:'已删除', libDeleteOutdated:'服务端版本过旧，请重启服务后再试', libAbortConfirm:'中止这个后台制作任务？已生成的中间产物会保留，下次点歌会继续跑。', libAborted:'已中止', qrAlt: '点歌二维码', liveMessage: '现场消息', videoLyricsOn: '视频歌词：开', videoLyricsOff: '视频歌词：关', wordLevelTitle: '当前行按字逐个点亮', wordLevelUnavailable: '这首歌的歌词没有逐字数据（只有行级时间轴），切到逐字也不会有变化', libCleanup:'清理残留', libCleanupTitle:'清理残留文件', libCleanupDesc:'扫描曲库，找出已删除歌曲遗留的产物文件', libScanning:'扫描中…', libCleanupEmpty:'没有发现残留文件，曲库是干净的', libCleanupSummary:'发现 {count} 项残留，共 {size}', libCleanupHint:'只列出数据库里已无对应记录的产物。正在制作的歌曲不会出现在这里。', libCleanupSelectAll:'全选', libCleanupDeselectAll:'全不选', libCleanupConfirm:'确定删除选中的 {count} 项？共 {size}，删除后不可恢复。', libCleanupRunning:'清理中…', libCleanupDone:'已清理 {count} 项，释放 {size}', libCleanupPartial:'清理完成：成功 {removed} 项，跳过 {skipped} 项，失败 {failed} 项', libCleanupManifest:'删除清单已保存到 data/ 目录', libScanFailed:'扫描失败：{error}', libCleanupFailed:'清理失败：{error}', libGroupOutput:'成品音频 / 视频', libGroupCovers:'封面', libGroupLyrics:'歌词文件', libGroupUpstream:'原始下载', libGroupOverrides:'歌词覆盖', libCleanupActive:'有 {count} 首歌正在制作，其产物已自动排除', libCleanupGroupItems:'{count} 项 · {size}' });
+Object.assign(commonI18n.zh, { libColMv:"MV", libMvShort:"MV", libMvShortTitle:"查看/更换官方 MV（视频模式背景）", libMvTitle:"官方 MV（背景画面）", libMvHint:"官方 MV 只在视频模式里作为静音背景在线播放（YouTube IFrame），不会下载，也不影响本地 MP3 音频。找不到或不可用时会自动换成模糊专辑封面。", libMvLoading:"读取中…", libMvSearch:"重新搜索", libMvSearching:"正在 YouTube 搜索官方 MV…", libMvScore:"评分", libMvPreview:"预览", libMvUse:"选用", libMvConfirm:"确认这个 MV", libMvClear:"清除", libMvClearConfirm:"清除这首歌的 MV？视频模式会改用模糊专辑封面。", libMvCleared:"已清除", libMvSaved:"✅ 已保存并标记为「已确认」", libMvNeedId:"请填写 YouTube videoId 或链接", libMvManualLabel:"手动指定 YouTube videoId", libMvSave:"保存", libMvCandidates:"候选视频", libMvCandidatesHint:"已自动选用最高分；想换就点「选用」，之后自动匹配不会再改动你的选择。", libMvNoCandidates:"还没有候选。点「重新搜索」从 YouTube 找官方 MV。", libMvNone:"没有 MV（播放时用专辑封面）", libMvNoKey:"没有配置 YouTube API Key：自动匹配被跳过，只能手动填 videoId。", libMvAuto:"自动匹配", libMvManual:"已确认", libMvPending:"待确认", libMvUnavailable:"不可用", libMvNotFound:"未找到", libMvAutoDone:"✅ 高置信度，已自动采用", libMvPendingDone:"✅ 已自动选用最高分（置信度一般，可在下面换）", libMvNotFoundDone:"没有找到可用的 MV（视频模式会用模糊专辑封面）" });
+Object.assign(commonI18n.zh, { libMvFilterTitle:"只看某个 MV 状态的曲目", libMvFilterAll:"MV：全部" });
+Object.assign(commonI18n.zh, { libMvSourceYtmTitle:"来自 YouTube Music（ytmusicapi），不消耗官方 API 配额" });
+Object.assign(commonI18n.en, { libMvSourceYtmTitle:"From YouTube Music (ytmusicapi) — no official API quota used" });
+Object.assign(commonI18n.de, { libMvSourceYtmTitle:"Von YouTube Music (ytmusicapi) — kein offizielles API-Kontingent" });
+Object.assign(commonI18n.zh, { libMvRateLimited:"⏳ YouTube 暂时限流（429），MV 搜索已暂停，稍后会自动恢复重试" });
+Object.assign(commonI18n.zh, { libMatchStart:"一键匹配 MV / 歌词（缺 {mv} 个 MV · {lyrics} 个歌词）", libMatchTitle:"后台串行补齐缺失的官方 MV 与歌词（低并发，避免 YouTube 限流）", libMatchRunning:"正在后台匹配 {done}/{total}", libMatchOk:"成功", libMatchSkip:"跳过", libMatchFail:"失败", libMatchCancel:"停止", libMatchCanceled:"已停止后台匹配", libMatchStarted:"已开始后台匹配 {count} 首", libMatchNothing:"没有需要匹配的歌曲", libMatchBusy:"已经有一批匹配任务在跑了", libMatchLast:"上次", libMatchRateLimited:"YouTube 暂时限流，稍后再试" });
+Object.assign(commonI18n.zh, { libMatchRateLimitedAt:"YouTube 限流中，{sec} 秒后自动恢复" });
+Object.assign(commonI18n.zh, { libMatchQuotaOut:"今天 YouTube 搜索配额已用完，明天会自动恢复" });
+// 配额/限流时的**二次确认**文案（红色按钮点下去之后弹的那个）
+Object.assign(commonI18n.zh, {
+  libMatchForceQuota:"YouTube 官方 API 今日配额已用完，继续匹配大概率会全部跳过。仍要强行重试？",
+  libMatchForceQuotaYtm:"YouTube 官方 API 今日配额已用完。将改用 YouTube Music 源（无配额限制）继续匹配。是否继续？",
+  libMatchForceRate:"YouTube 正在限流（{sec} 秒后自动恢复），现在匹配大概率会全部跳过。仍要强行重试？",
+  libMatchForceRateYtm:"YouTube 正在限流（{sec} 秒后自动恢复）。将改用 YouTube Music 源（无配额限制）继续匹配。是否继续？",
+  libMatchStillBlocked:"还是没能启动：YouTube 官方 API 仍然受限",
+  libMatchQuotaHint:"配额受限",
+});
 Object.assign(commonI18n.en, { libEyebrow:'LIBRARY · MODE B', libIntro:'Processing status, processing time, file size, and match score for every track. Downloads and separations triggered by song requests update here in real time.', libLoading:'Loading library…', libOpenDisplay:'Open Display ↗', libRematchTitle:'Re-match Lyrics', libClose:'Close', libTrackTitle:'Song title', libTrackArtist:'Artist', libArtistsHint:'Separate multiple artists with commas', libRematchHint:'Only the lyrics search changes; the track details in the library stay as they are.', libRematchSearch:'Search Lyrics', libCancel:'Cancel', libTitleRequired:'Please enter a song title', libSearchingLyrics:'Searching…', libMatched:'✅ Match found: {provider} · {kind} · {lines} lines', libLyricsUpdated:'Lyrics updated and active for the next playback', libNoLyricsFound:'❌ No lyrics found. Try a shorter song title or a different spelling (for example, drop the text in brackets).', libRematchFailed:'❌ Failed: {error}', libUnknownError:'unknown error', libNoLyrics:'No lyrics', libWordLevel:'Word-level', libLineLevel:'Line-level', libPlainText:'Plain text', libStatusProcessed:'Processed', libStatusProcessing:'Processing', libStatusPending:'Pending', libStatusFailed:'Failed', libStatusCanceled:'Canceled', libQueued:'Queued', libUnavailable:'Library unavailable: ', libHeading:'Library Management', libDesc:'Processing status, processing time, file size, and match score for every song. Downloads and separations from song requests show their live stage here.', libSummary:'{total} tracks · Processed {processed} · Processing {processing} · Pending {pending} · Failed {failed}', libFilterPlaceholder:'Filter by title / artist / album', libRefresh:'Refresh', libColTrack:'Track', libColStatus:'Status', libColLyrics:'Lyrics', libColDuration:'Time', libColSize:'Size', libColMatch:'Match', libColActions:'Actions', libErrorReason:'Reason: ', libStop:'Stop', libStopTitle:'Cancel background processing (DJ only)', libRematchShort:'Re-search', libRematchShortTitle:'Edit title or artist and search for lyrics again', libDelete:'Delete', libDeleteTitle:'Delete from library (including generated files)', libEmpty:'No matching tracks', libDeleteConfirm:'Delete “{title}” from the library? This also removes the finished audio, video, cover, lyrics, and source download.', libDeleted:'Deleted', libDeleteOutdated:'The server is running an older version. Please restart the service and try again.', libAbortConfirm:'Cancel this background processing job? Intermediate files are kept and processing resumes the next time the song is requested.', libAborted:'Stopped', qrAlt: 'QR code to choose a song', liveMessage: 'Live message', videoLyricsOn: 'Video lyrics: on', videoLyricsOff: 'Video lyrics: off', wordLevelTitle: 'Current line lights up word by word', wordLevelUnavailable: 'This song has no word-level lyrics (line timing only), so word mode will look the same', libCleanup:'Clean leftovers', libCleanupTitle:'Clean up leftover files', libCleanupDesc:'Scan the library for files left behind by deleted songs', libScanning:'Scanning…', libCleanupEmpty:'No leftover files found — the library is clean', libCleanupSummary:'Found {count} leftover items, {size} in total', libCleanupHint:'Only files with no matching database record are listed. Songs currently being processed never appear here.', libCleanupSelectAll:'Select all', libCleanupDeselectAll:'Deselect all', libCleanupConfirm:'Delete the selected {count} items? {size} in total. This cannot be undone.', libCleanupRunning:'Cleaning…', libCleanupDone:'Removed {count} items, freed {size}', libCleanupPartial:'Done: {removed} removed, {skipped} skipped, {failed} failed', libCleanupManifest:'A manifest of deleted files was saved under data/', libScanFailed:'Scan failed: {error}', libCleanupFailed:'Cleanup failed: {error}', libGroupOutput:'Audio / video output', libGroupCovers:'Cover art', libGroupLyrics:'Lyrics files', libGroupUpstream:'Raw downloads', libGroupOverrides:'Lyrics overrides', libCleanupActive:'{count} song(s) are being processed — their files are excluded', libCleanupGroupItems:'{count} items · {size}' });
+Object.assign(commonI18n.en, { libMvFilterTitle:"Show only tracks with a given MV status", libMvFilterAll:"MV: all" });
+Object.assign(commonI18n.en, { libMvRateLimited:"⏳ YouTube is rate-limiting (429). MV search paused; it retries automatically." });
+Object.assign(commonI18n.en, { libMatchStart:"Match MV / lyrics (missing {mv} MVs · {lyrics} lyrics)", libMatchTitle:"Fill in missing official MVs and lyrics in the background (sequential, low concurrency)", libMatchRunning:"Matching in background {done}/{total}", libMatchOk:"done", libMatchSkip:"skipped", libMatchFail:"failed", libMatchCancel:"Stop", libMatchCanceled:"Background matching stopped", libMatchStarted:"Started background matching for {count} tracks", libMatchNothing:"Nothing to match", libMatchBusy:"A matching job is already running", libMatchLast:"Last run", libMatchRateLimited:"YouTube is rate-limiting — try again later" });
+Object.assign(commonI18n.en, { libMatchRateLimitedAt:"YouTube is rate-limiting — recovers automatically in {sec}s" });
+Object.assign(commonI18n.en, { libMatchQuotaOut:"YouTube\u0027s daily search quota is used up today; it resets tomorrow" });
+Object.assign(commonI18n.en, {
+  libMatchForceQuota:"YouTube\u0027s official API quota is used up today. Retrying now will most likely skip everything. Force retry anyway?",
+  libMatchForceQuotaYtm:"YouTube\u0027s official API quota is used up today. Matching will fall back to the YouTube Music source (no quota limit). Continue?",
+  libMatchForceRate:"YouTube is rate-limiting ({sec}s until automatic recovery). Retrying now will most likely skip everything. Force retry anyway?",
+  libMatchForceRateYtm:"YouTube is rate-limiting ({sec}s until recovery). Matching will fall back to the YouTube Music source (no quota limit). Continue?",
+  libMatchStillBlocked:"Still could not start: the official YouTube API is limited",
+  libMatchQuotaHint:"Quota limited",
+});
+Object.assign(commonI18n.en, { libColMv:"MV", libMvShort:"MV", libMvShortTitle:"View / change the official MV (video mode background)", libMvTitle:"Official MV (background)", libMvHint:"The official MV is only a muted, online background in video mode (YouTube IFrame). Nothing is downloaded and the local MP3 audio is untouched. If it is missing or unavailable, the blurred album cover is used automatically.", libMvLoading:"Loading…", libMvSearch:"Search again", libMvSearching:"Searching YouTube for the official MV…", libMvScore:"Score", libMvPreview:"Preview", libMvUse:"Use this", libMvConfirm:"Confirm this MV", libMvClear:"Clear", libMvClearConfirm:"Clear the MV for this song? Video mode will use the blurred album cover.", libMvCleared:"Cleared", libMvSaved:"✅ Saved and marked as confirmed", libMvNeedId:"Enter a YouTube videoId or link", libMvManualLabel:"Set a YouTube videoId manually", libMvSave:"Save", libMvCandidates:"Candidate videos", libMvCandidatesHint:"The best score is picked automatically; click “Use this” to switch — automatic matching never changes your choice afterwards.", libMvNoCandidates:"No candidates yet. Click “Search again” to look for the official MV on YouTube.", libMvNone:"No MV (the album cover is shown)", libMvNoKey:"No YouTube API Key configured: automatic matching is skipped, only a manual videoId works.", libMvAuto:"Auto-matched", libMvManual:"Confirmed", libMvPending:"Needs review", libMvUnavailable:"Unavailable", libMvNotFound:"Not found", libMvAutoDone:"✅ High confidence, applied automatically", libMvPendingDone:"✅ Highest score picked automatically (weak confidence — you can swap below)", libMvNotFoundDone:"No usable MV found (video mode uses the blurred album cover)" });
 Object.assign(commonI18n.de, { libEyebrow:'BIBLIOTHEK · MODUS B', libIntro:'Verarbeitungsstatus, Dauer, Dateigröße und Match-Score aller Titel. Durch Songwünsche ausgelöste Downloads und Trennungen zeigen hier live ihren Fortschritt.', libLoading:'Bibliothek wird geladen…', libOpenDisplay:'Anzeige öffnen ↗', libRematchTitle:'Songtext neu zuordnen', libClose:'Schließen', libTrackTitle:'Songtitel', libTrackArtist:'Interpret', libArtistsHint:'Mehrere Interpreten mit Kommas trennen', libRematchHint:'Änderungen betreffen nur die Songtextsuche, nicht die Angaben in der Bibliothek.', libRematchSearch:'Songtext suchen', libCancel:'Abbrechen', libTitleRequired:'Bitte einen Songtitel eingeben', libSearchingLyrics:'Suche läuft…', libMatched:'✅ Treffer: {provider} · {kind} · {lines} Zeilen', libLyricsUpdated:'Songtext aktualisiert und bei der nächsten Wiedergabe aktiv', libNoLyricsFound:'❌ Kein Songtext gefunden. Versuche einen kürzeren Titel oder eine andere Schreibweise (z. B. ohne Zusatz in Klammern).', libRematchFailed:'❌ Fehlgeschlagen: {error}', libUnknownError:'unbekannter Fehler', libNoLyrics:'Kein Songtext', libWordLevel:'Wortgenau', libLineLevel:'Zeilenweise', libPlainText:'Nur Text', libStatusProcessed:'Verarbeitet', libStatusProcessing:'In Verarbeitung', libStatusPending:'Ausstehend', libStatusFailed:'Fehlgeschlagen', libStatusCanceled:'Abgebrochen', libQueued:'In Warteschlange', libUnavailable:'Bibliothek nicht verfügbar: ', libHeading:'Bibliotheksverwaltung', libDesc:'Verarbeitungsstatus, Dauer, Dateigröße und Match-Score aller Songs. Durch Songwünsche ausgelöste Downloads und Trennungen zeigen hier live ihren Fortschritt.', libSummary:'{total} Titel · Verarbeitet {processed} · In Verarbeitung {processing} · Ausstehend {pending} · Fehlgeschlagen {failed}', libFilterPlaceholder:'Nach Titel / Interpret / Album filtern', libRefresh:'Aktualisieren', libColTrack:'Titel', libColStatus:'Status', libColLyrics:'Songtext', libColDuration:'Dauer', libColSize:'Größe', libColMatch:'Match', libColActions:'Aktionen', libErrorReason:'Grund: ', libStop:'Stoppen', libStopTitle:'Hintergrundverarbeitung abbrechen (nur DJ)', libRematchShort:'Neu suchen', libRematchShortTitle:'Titel oder Interpret ändern und Songtext erneut suchen', libDelete:'Löschen', libDeleteTitle:'Aus der Bibliothek löschen (inklusive erzeugter Dateien)', libEmpty:'Keine passenden Titel', libDeleteConfirm:'„{title}“ aus der Bibliothek löschen? Dabei werden fertige Audiodateien, Video, Cover, Songtext und der Quelldownload entfernt.', libDeleted:'Gelöscht', libDeleteOutdated:'Der Server läuft mit einer älteren Version. Bitte den Dienst neu starten und erneut versuchen.', libAbortConfirm:'Diesen Hintergrundauftrag abbrechen? Bereits erzeugte Zwischendateien bleiben erhalten, bei der nächsten Anforderung geht es weiter.', libAborted:'Abgebrochen', qrAlt: 'QR-Code zum Songaussuchen', liveMessage: 'Live-Durchsage', videoLyricsOn: 'Songtext im Video: an', videoLyricsOff: 'Songtext im Video: aus', wordLevelTitle: 'Aktuelle Zeile leuchtet Wort für Wort auf', wordLevelUnavailable: 'Für diesen Song gibt es keinen wortgenauen Songtext (nur Zeilentiming) – der Wortmodus sieht daher gleich aus', libCleanup:'Reste aufräumen', libCleanupTitle:'Übrig gebliebene Dateien aufräumen', libCleanupDesc:'Bibliothek nach Dateien durchsuchen, die von gelöschten Songs übrig geblieben sind', libScanning:'Suche läuft…', libCleanupEmpty:'Keine Reste gefunden – die Bibliothek ist sauber', libCleanupSummary:'{count} Reste gefunden, insgesamt {size}', libCleanupHint:'Es werden nur Dateien ohne passenden Datenbankeintrag aufgelistet. Songs in Bearbeitung erscheinen hier nie.', libCleanupSelectAll:'Alle auswählen', libCleanupDeselectAll:'Alle abwählen', libCleanupConfirm:'Die ausgewählten {count} Einträge löschen? Insgesamt {size}. Das kann nicht rückgängig gemacht werden.', libCleanupRunning:'Aufräumen…', libCleanupDone:'{count} Einträge entfernt, {size} freigegeben', libCleanupPartial:'Fertig: {removed} entfernt, {skipped} übersprungen, {failed} fehlgeschlagen', libCleanupManifest:'Eine Liste der gelöschten Dateien wurde unter data/ gespeichert', libScanFailed:'Suche fehlgeschlagen: {error}', libCleanupFailed:'Aufräumen fehlgeschlagen: {error}', libGroupOutput:'Audio- / Videoausgabe', libGroupCovers:'Cover', libGroupLyrics:'Songtext-Dateien', libGroupUpstream:'Rohdaten', libGroupOverrides:'Songtext-Überschreibungen', libCleanupActive:'{count} Song(s) werden gerade verarbeitet – ihre Dateien sind ausgeschlossen', libCleanupGroupItems:'{count} Einträge · {size}' });
+Object.assign(commonI18n.de, { libMvFilterTitle:"Nur Titel mit einem bestimmten MV-Status anzeigen", libMvFilterAll:"MV: alle" });
+Object.assign(commonI18n.de, { libMvRateLimited:"⏳ YouTube drosselt gerade (429). MV-Suche pausiert und wird automatisch erneut versucht." });
+Object.assign(commonI18n.de, { libMatchStart:"MV / Songtexte automatisch zuordnen ({mv} MVs · {lyrics} Songtexte fehlen)", libMatchTitle:"Fehlende offizielle MVs und Songtexte im Hintergrund nachziehen (sequenziell)", libMatchRunning:"Zuordnung läuft {done}/{total}", libMatchOk:"ok", libMatchSkip:"übersprungen", libMatchFail:"fehlgeschlagen", libMatchCancel:"Stopp", libMatchCanceled:"Hintergrund-Zuordnung gestoppt", libMatchStarted:"Hintergrund-Zuordnung für {count} Titel gestartet", libMatchNothing:"Nichts zuzuordnen", libMatchBusy:"Es läuft bereits eine Zuordnung", libMatchLast:"Letzter Lauf", libMatchRateLimited:"YouTube drosselt gerade – später erneut versuchen" });
+Object.assign(commonI18n.de, { libMatchRateLimitedAt:"YouTube drosselt – automatische Fortsetzung in {sec}s" });
+Object.assign(commonI18n.de, { libMatchQuotaOut:"Das t\u00e4gliche YouTube-Suchkontingent ist heute aufgebraucht; morgen wieder verf\u00fcgbar" });
+Object.assign(commonI18n.de, {
+  libMatchForceQuota:"Das offizielle YouTube-Kontingent ist heute aufgebraucht. Ein erneuter Versuch w\u00fcrde vermutlich alles \u00fcberspringen. Trotzdem erzwingen?",
+  libMatchForceQuotaYtm:"Das offizielle YouTube-Kontingent ist heute aufgebraucht. Es wird stattdessen die YouTube-Music-Quelle genutzt (ohne Kontingent). Fortfahren?",
+  libMatchForceRate:"YouTube drosselt gerade (automatische Fortsetzung in {sec}s). Ein erneuter Versuch w\u00fcrde vermutlich alles \u00fcberspringen. Trotzdem erzwingen?",
+  libMatchForceRateYtm:"YouTube drosselt gerade (Fortsetzung in {sec}s). Es wird stattdessen die YouTube-Music-Quelle genutzt (ohne Kontingent). Fortfahren?",
+  libMatchStillBlocked:"Konnte nicht starten: Die offizielle YouTube-API ist weiterhin eingeschr\u00e4nkt",
+  libMatchQuotaHint:"Kontingent eingeschr\u00e4nkt",
+});
+Object.assign(commonI18n.de, { libColMv:"MV", libMvShort:"MV", libMvShortTitle:"Offizielles MV ansehen / ändern (Hintergrund im Videomodus)", libMvTitle:"Offizielles MV (Hintergrund)", libMvHint:"Das offizielle MV ist im Videomodus nur ein stummer Online-Hintergrund (YouTube IFrame). Es wird nichts heruntergeladen und das lokale MP3-Audio bleibt unberührt. Fehlt es oder ist es nicht verfügbar, wird automatisch das unscharfe Albumbild verwendet.", libMvLoading:"Wird geladen…", libMvSearch:"Neu suchen", libMvSearching:"YouTube wird nach dem offiziellen MV durchsucht…", libMvScore:"Score", libMvPreview:"Vorschau", libMvUse:"Auswählen", libMvConfirm:"Dieses MV bestätigen", libMvClear:"Löschen", libMvClearConfirm:"MV für diesen Song löschen? Der Videomodus nutzt dann das unscharfe Albumbild.", libMvCleared:"Gelöscht", libMvSaved:"✅ Gespeichert und als bestätigt markiert", libMvNeedId:"YouTube-Video-ID oder Link eingeben", libMvManualLabel:"YouTube-Video-ID manuell setzen", libMvSave:"Speichern", libMvCandidates:"Kandidaten", libMvCandidatesHint:"Der beste Wert wird automatisch gewählt; mit „Auswählen\" änderst du es, danach fasst die automatische Suche es nicht mehr an.", libMvNoCandidates:"Noch keine Kandidaten. Auf „Neu suchen\" klicken, um das offizielle MV auf YouTube zu suchen.", libMvNone:"Kein MV (es wird das Albumbild gezeigt)", libMvNoKey:"Kein YouTube-API-Key konfiguriert: die automatische Suche entfällt, nur eine manuelle Video-ID funktioniert.", libMvAuto:"Automatisch", libMvManual:"Bestätigt", libMvPending:"Zu prüfen", libMvUnavailable:"Nicht verfügbar", libMvNotFound:"Nicht gefunden", libMvAutoDone:"✅ Hohe Sicherheit, automatisch übernommen", libMvPendingDone:"✅ Höchster Wert automatisch gewählt (unsichere Zuordnung – unten änderbar)", libMvNotFoundDone:"Kein nutzbares MV gefunden (Videomodus nutzt das unscharfe Albumbild)" });
 // 曲库文案查找：优先本页字典，缺 key 回退到 commonI18n（localeText 读的那份）。
 function libraryText(key, fallback = '') {
   // key 已并入 commonI18n，直接复用 localeText；保留此包装是为了不改 36 处调用点。
@@ -1066,6 +1112,194 @@ function lyricsBadge(track) {
   return `<span class="lib-badge ${cls}">${kind}</span><div class="song-meta">${esc(track.lyricsProvider)}</div>`;
 }
 
+// ---------------------------------------------------------------- 官方 MV（视频模式背景）
+// 状态 → 徽章。顺序按「已经能用/在等/不能用」排列，方便一眼扫出需要处理的歌。
+const VISUAL_STATUS_META = {
+  auto_matched: { cls: 'lib-badge-ok', label: () => libraryText('libMvAuto', '自动匹配') },
+  manually_confirmed: { cls: 'lib-badge-ok', label: () => libraryText('libMvManual', '已确认') },
+  pending: { cls: 'lib-badge-warn', label: () => libraryText('libMvPending', '待确认') },
+  unavailable: { cls: 'lib-badge-warn', label: () => libraryText('libMvUnavailable', '不可用') },
+  not_found: { cls: 'lib-badge', label: () => libraryText('libMvNotFound', '未找到') },
+};
+
+/** 「MV」列的徽章：状态 + 标题/频道/时长（鼠标悬停看评分明细） */
+function visualBadge(track) {
+  const status = track.visualMatchStatus || 'pending';
+  const meta = VISUAL_STATUS_META[status] || VISUAL_STATUS_META.pending;
+  const score = track.visualMatchScore == null ? '' : ` · ${Number(track.visualMatchScore).toFixed(0)}`;
+  const badge = `<span class="lib-badge ${meta.cls}">${esc(meta.label())}${esc(score)}</span>`;
+  const detail = track.visualVideoId
+    ? `${esc(String(track.visualVideoTitle || track.visualVideoId).slice(0, 42))}${track.visualChannelTitle ? `<br><span class="muted">${esc(String(track.visualChannelTitle).slice(0, 26))}</span>` : ''}`
+    : `<span class="muted">${esc(libraryText('libMvNone', '没有 MV（播放时用专辑封面）'))}</span>`;
+  const title = esc(track.visualMatchReason || '');
+  return `<div class="lib-status-cell" title="${title}">${badge}<div class="song-meta">${detail}</div></div>`;
+}
+
+/**
+ * 「官方 MV」弹窗：查看当前匹配 / 重新搜索 / 从候选中选择 / 手填 videoId / 确认 / 清除。
+ *
+ * 只动曲库的 visual_* 字段，**不会**碰 sourceVideoId（音频处理用的 YouTube 源）。
+ */
+function openMvDialog(token, track) {
+  const old = document.getElementById('mv-dialog');
+  if (old) old.remove();
+  const wrap = document.createElement('div');
+  wrap.id = 'mv-dialog';
+  wrap.className = 'settings-modal-backdrop open';
+  wrap.innerHTML = `<section class="settings-modal card" style="max-width:720px">
+    <div class="section-head"><div><h2>${esc(libraryText('libMvTitle', '官方 MV（背景画面）'))}</h2><p>${esc(track.title)} · ${esc((track.artists || []).join(', ') || '—')}</p></div><button class="btn ghost small" data-role="close">${esc(libraryText('libClose', '关闭'))}</button></div>
+    <p class="helper">${esc(libraryText('libMvHint', '官方 MV 只在视频模式里作为静音背景在线播放（YouTube IFrame），不会下载，也不影响本地 MP3 音频。找不到或不可用时会自动换成模糊专辑封面。'))}</p>
+    <div id="mv-body"><div class="notice">${esc(libraryText('libMvLoading', '读取中…'))}</div></div>
+    <div id="mv-result" class="notice" hidden></div>
+    <div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap">
+      <button class="btn primary" id="mv-search">${esc(libraryText('libMvSearch', '重新搜索'))}</button>
+      <button class="btn ghost" data-role="close">${esc(libraryText('libCancel', '取消'))}</button>
+    </div>
+  </section>`;
+  document.body.appendChild(wrap);
+  const close = () => wrap.remove();
+  wrap.addEventListener('click', (e) => { if (e.target === wrap || e.target.closest('[data-role="close"]')) close(); });
+  const body = wrap.querySelector('#mv-body');
+  const result = wrap.querySelector('#mv-result');
+  const searchBtn = wrap.querySelector('#mv-search');
+  let current = null;
+
+  const say = (text, isError) => {
+    result.hidden = false;
+    result.textContent = text;
+    result.style.color = isError ? '#b42318' : '';
+  };
+
+  const call = async (action, payload = {}) => api(`/api/library/admin/tracks/${encodeURIComponent(track.spotifyId)}/mv`, {
+    method: 'POST',
+    headers: { 'x-admin-token': token },
+    body: JSON.stringify({ action, ...payload }),
+  });
+
+  const fmtDuration = (sec) => {
+    if (!sec && sec !== 0) return '—';
+    const total = Math.round(Number(sec));
+    return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
+  };
+
+  const render = (data) => {
+    current = data;
+    const status = data.visualMatchStatus || 'pending';
+    const meta = VISUAL_STATUS_META[status] || VISUAL_STATUS_META.pending;
+    const candidates = data.candidates || [];
+    body.innerHTML = `
+      <div class="mv-current">
+        <div class="mv-current-head">
+          <span class="lib-badge ${meta.cls}">${esc(meta.label())}${data.visualMatchScore == null ? '' : ` · ${Number(data.visualMatchScore).toFixed(0)}`}</span>
+          ${data.visualMatchedAt ? `<span class="song-meta">${esc(String(data.visualMatchedAt).slice(0, 19))}</span>` : ''}
+        </div>
+        ${data.visualVideoId
+          ? `<div class="mv-line"><strong>${esc(data.visualVideoTitle || data.visualVideoId)}</strong>
+               <a href="https://www.youtube.com/watch?v=${encodeURIComponent(data.visualVideoId)}" target="_blank" rel="noopener noreferrer">${esc(data.visualVideoId)} ↗</a></div>
+             <div class="song-meta">${esc(data.visualChannelTitle || '—')} · ${esc(fmtDuration(data.visualDuration))}</div>`
+          : `<div class="song-meta">${esc(libraryText('libMvNone', '没有 MV（播放时用专辑封面）'))}</div>`}
+        ${data.visualMatchReason ? `<div class="song-meta mv-reason">${esc(data.visualMatchReason)}</div>` : ''}
+        <div class="mv-actions">
+          ${data.visualVideoId && status !== 'manually_confirmed' ? `<button class="btn small soft" data-mv="confirm">${esc(libraryText('libMvConfirm', '确认这个 MV'))}</button>` : ''}
+          ${data.visualVideoId ? `<button class="btn small ghost" data-mv="clear">${esc(libraryText('libMvClear', '清除'))}</button>` : ''}
+        </div>
+      </div>
+      <div class="mv-manual">
+        <label class="field"><span>${esc(libraryText('libMvManualLabel', '手动指定 YouTube videoId'))}</span>
+          <input class="input" id="mv-videoid" placeholder="dQw4w9WgXcQ" value="" /></label>
+        <button class="btn small soft" data-mv="custom">${esc(libraryText('libMvSave', '保存'))}</button>
+      </div>
+      <div class="mv-candidates">
+        <div class="section-head"><div><h3>${esc(libraryText('libMvCandidates', '候选视频'))}</h3><p class="helper">${esc(libraryText('libMvCandidatesHint', '点「选用」把候选项设为官方 MV（状态变成已确认，之后自动匹配不会再改动它）。'))}</p></div></div>
+        <div class="mv-list">
+        ${candidates.length ? candidates.map((c) => `
+          <div class="mv-candidate${c.videoId === data.visualVideoId ? ' is-current' : ''}" title="${esc((c.reasons || []).join('；'))}">
+            <img class="song-thumb" src="${esc(c.thumbnailUrl || '')}" alt="">
+            <div class="song-main">
+              <div class="song-title" title="${esc(c.title || '')}">${esc(c.title || c.videoId)}</div>
+              <div class="song-meta">${esc(c.channelTitle || '—')} · ${esc(fmtDuration(c.duration))}${c.source === 'ytmusic' ? `<span class="mv-source" title="${esc(libraryText('libMvSourceYtmTitle', '来自 YouTube Music（ytmusicapi），不消耗官方 API 配额'))}">YouTube Music</span>` : ''}</div>
+            </div>
+            <div class="queue-actions">
+              <span class="mv-score" title="${esc(libraryText('libMvScore', '评分'))}">${Number(c.score || 0).toFixed(0)}</span>
+              <a class="btn small ghost" href="https://www.youtube.com/watch?v=${encodeURIComponent(c.videoId)}" target="_blank" rel="noopener noreferrer">${esc(libraryText('libMvPreview', '预览'))}</a>
+              <button class="btn small soft" data-mv="select" data-video-id="${esc(c.videoId)}">${esc(libraryText('libMvUse', '选用'))}</button>
+            </div>
+          </div>`).join('') : `<div class="empty">${esc(libraryText('libMvNoCandidates', '还没有候选。点「重新搜索」从 YouTube 找官方 MV。'))}</div>`}
+        </div>
+      </div>
+      ${data.config && data.config.apiKeyConfigured === false && !(data.config.ytmusic && data.config.ytmusic.available)
+        ? `<div class="notice">${esc(libraryText('libMvNoKey', '没有配置 YouTube API Key：自动匹配被跳过，只能手动填 videoId。'))}</div>`
+        : ''}`;
+
+    body.querySelectorAll('[data-mv]').forEach((button) => {
+      button.onclick = async () => {
+        const action = button.dataset.mv;
+        button.disabled = true;
+        try {
+          if (action === 'custom') {
+            const videoId = (body.querySelector('#mv-videoid')?.value || '').trim();
+            if (!videoId) { say(libraryText('libMvNeedId', '请填写 YouTube videoId 或链接'), true); return; }
+            const data2 = await call('custom', { videoId });
+            say(libraryText('libMvSaved', '✅ 已保存并标记为「已确认」'));
+            render(data2);
+          } else if (action === 'select') {
+            const data2 = await call('select', { videoId: button.dataset.videoId });
+            say(libraryText('libMvSaved', '✅ 已保存并标记为「已确认」'));
+            render(data2);
+          } else if (action === 'confirm') {
+            const data2 = await call('confirm');
+            say(libraryText('libMvSaved', '✅ 已保存并标记为「已确认」'));
+            render(data2);
+          } else if (action === 'clear') {
+            if (!confirm(libraryText('libMvClearConfirm', '清除这首歌的 MV？视频模式会改用模糊专辑封面。'))) return;
+            const data2 = await call('clear');
+            say(libraryText('libMvCleared', '已清除'));
+            render(data2);
+          }
+          setTimeout(() => refreshAdminLibrary(token), 400);
+        } catch (error) {
+          say(`❌ ${error.message}`, true);
+        } finally {
+          button.disabled = false;
+        }
+      };
+    });
+  };
+
+  const load = async () => {
+    try {
+      const data = await api(`/api/library/admin/tracks/${encodeURIComponent(track.spotifyId)}/mv`, { headers: { 'x-admin-token': token } });
+      render(data);
+    } catch (error) {
+      body.innerHTML = `<div class="notice">${esc(error.message)}</div>`;
+    }
+  };
+
+  searchBtn.onclick = async () => {
+    searchBtn.disabled = true;
+    say(libraryText('libMvSearching', '正在 YouTube 搜索官方 MV…'));
+    try {
+      const data = await call('search');
+      // 现在只要能搜到候选就会自动选最高分；只有"一个候选都没有"才是没找到。
+      say(data.visualVideoId
+        ? libraryText('libMvAutoDone', '✅ 已自动选用最高分')
+        : libraryText('libMvNotFoundDone', '没有找到可用的 MV（视频模式会用模糊专辑封面）'));
+      render(data);
+      setTimeout(() => refreshAdminLibrary(token), 400);
+    } catch (error) {
+      // 限流（429）不是"没找到"：明确告诉管理员稍后自动恢复，别误以为这首歌没有 MV
+      const limited = error.code === 'YOUTUBE_RATE_LIMITED' || /限流|429/.test(String(error.message));
+      say(limited
+        ? libraryText('libMvRateLimited', '⏳ YouTube 暂时限流（429），MV 搜索已暂停，稍后会自动恢复重试')
+        : `❌ ${error.message}`, true);
+    } finally {
+      searchBtn.disabled = false;
+    }
+  };
+
+  load();
+}
+
 function formatBytes(n) {
   if (!n) return '—';
   if (n >= 1024 * 1024 * 1024) return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
@@ -1095,6 +1329,61 @@ function libraryStatusBadge(track) {  const map = {
   const stage = track.status === 'processing' ? ` · ${esc(track.stageLabel || libraryText('libQueued', '排队中'))}${track.progress && track.progress.percent ? ` ${track.progress.percent}%` : ''}` : '';
   return `<span class="lib-badge lib-${key}">${label}${stage}</span>`;
 }
+/**
+ * 「一键匹配 MV / 歌词」进度条 + 按钮。
+ *
+ * 后端是**串行 + 间隔**跑（避免 YouTube 429），所以这里只显示进度，
+ * 不做前端并发；刷新时按 `/api/library/admin` 里带回的 matcher 状态渲染。
+ */
+function matchBarHtml(data) {
+  const job = data.matcher || { state: 'idle', counts: { total: 0, done: 0, failed: 0, skipped: 0, remaining: 0 } };
+  const need = data.matchCandidates || { mv: 0, lyrics: 0 };
+  const c = job.counts || {};
+  const total = c.total || 0;
+  const finished = (c.done || 0) + (c.failed || 0) + (c.skipped || 0);
+  const pct = total ? Math.round((finished / total) * 100) : 0;
+  const running = job.state === 'running';
+  const limit = data.visualConfig && data.visualConfig.quota ? data.visualConfig.quota : {};
+  const limited = Boolean(limit.rateLimited);
+
+  if (running) {
+    return `<div class="lib-match is-running">
+      <span class="lib-match-spinner"></span>
+      <span class="lib-match-text">${esc(libraryFormat(libraryText('libMatchRunning', '正在后台匹配 {done}/{total}'), { done: finished, total }))}</span>
+      <div class="lib-match-bar"><i style="width:${pct}%"></i></div>
+      <span class="song-meta">${esc(libraryText('libMatchOk', '成功'))} ${c.done || 0} · ${esc(libraryText('libMatchSkip', '跳过'))} ${c.skipped || 0} · ${esc(libraryText('libMatchFail', '失败'))} ${c.failed || 0}</span>
+      <button class="btn small ghost" id="lib-match-cancel">${esc(libraryText('libMatchCancel', '停止'))}</button>
+    </div>`;
+  }
+  const summary = total
+    ? `${libraryText('libMatchLast', '上次')}：${c.done || 0}/${total}${c.failed ? ` · ${libraryText('libMatchFail', '失败')} ${c.failed}` : ''}${c.skipped ? ` · ${libraryText('libMatchSkip', '跳过')} ${c.skipped}` : ''}`
+    : '';
+  // 配额用完 / 限流中：**不禁用按钮，改成红色**——DJ 点下去会弹二次确认，
+  // 确认后带 force 强行重试（并且优先走免配额的 YouTube Music 源）。
+  // 之前这里是"禁用 + 一行『今天配额已用完，明天自动恢复』"，等于直接判死刑，
+  // DJ 明明能手动再试一次却被挡住了。
+  const hasWork = need.mv + need.lyrics > 0;
+  const disabled = !hasWork ? 'disabled' : '';
+  const limitClass = limited ? ' danger is-limited' : '';
+  const ytmOk = Boolean(data.visualConfig && data.visualConfig.ytmusic && data.visualConfig.ytmusic.available);
+  const limitTitle = limited
+    ? (limit.exhausted
+      ? (ytmOk
+        ? libraryText('libMatchForceQuotaYtm', 'YouTube 官方 API 今日配额已用完。将改用 YouTube Music 源（无配额限制）继续匹配。是否继续？')
+        : libraryText('libMatchForceQuota', 'YouTube 官方 API 今日配额已用完，继续匹配大概率会全部跳过。仍要强行重试？'))
+      : (ytmOk
+        ? libraryFormat(libraryText('libMatchForceRateYtm', 'YouTube 正在限流（{sec} 秒后自动恢复）。将改用 YouTube Music 源（无配额限制）继续匹配。是否继续？'), { sec: limit.cooldownRemainingSec || 0 })
+        : libraryFormat(libraryText('libMatchForceRate', 'YouTube 正在限流（{sec} 秒后自动恢复），现在匹配大概率会全部跳过。仍要强行重试？'), { sec: limit.cooldownRemainingSec || 0 })))
+    : libraryText('libMatchTitle', '后台串行补齐缺失的官方 MV 与歌词（低并发，避免 YouTube 限流）');
+  return `<div class="lib-match">
+    <button class="btn soft${limitClass}" id="lib-match-start" data-force="${limited ? '1' : '0'}" title="${esc(limitTitle)}" ${disabled}>
+      ${esc(libraryFormat(libraryText('libMatchStart', '一键匹配 MV / 歌词（缺 {mv} 个 MV · {lyrics} 个歌词）'), { mv: need.mv, lyrics: need.lyrics }))}
+      ${limited ? `<span class="lib-match-flag">${esc(libraryText('libMatchQuotaHint', '配额受限'))}</span>` : ''}
+    </button>
+    ${summary ? `<span class="song-meta">${esc(summary)}</span>` : ''}
+  </div>`;
+}
+
 async function refreshAdminLibrary(token) {
   const content = document.getElementById('admin-content');
   if (!content) return;
@@ -1102,7 +1391,10 @@ async function refreshAdminLibrary(token) {
     const data = await api('/api/library/admin', { headers: { 'x-admin-token': token } });
     if (!data.available) { content.innerHTML = `<div class="notice">${esc(libraryText('libUnavailable', '曲库不可用：'))}${esc(data.reason || 'unknown')}</div>`; return; }
     const q = document.getElementById('lib-search')?.value || '';
-    const tracks = q ? data.tracks.filter(t => `${t.title} ${(t.artists || []).join(' ')} ${t.album || ''}`.toLowerCase().includes(q.toLowerCase())) : data.tracks;
+    // MV 状态筛选（「待确认」最常用：人工过一遍低置信度的歌）
+    const mvFilter = document.getElementById('lib-mv-filter')?.value || '';
+    let tracks = q ? data.tracks.filter(t => `${t.title} ${(t.artists || []).join(' ')} ${t.album || ''}`.toLowerCase().includes(q.toLowerCase())) : data.tracks;
+    if (mvFilter) tracks = tracks.filter(t => (t.visualMatchStatus || 'pending') === mvFilter);
     const counts = data.counts || {};
     content.innerHTML = `
       <div class="card panel lib-panel">
@@ -1110,9 +1402,14 @@ async function refreshAdminLibrary(token) {
           <div><h2>${esc(libraryText('libHeading', '曲库管理'))}</h2><p>${esc(libraryText('libDesc', '每首歌的处理状态、耗时、文件大小与匹配分。点歌触发的下载/分离会在这里显示实时阶段。'))}</p></div>
           <span class="tag">${esc(libraryFormat(libraryText('libSummary', '{total} 首 · 已处理 {processed} · 处理中 {processing} · 待处理 {pending} · 失败 {failed}'), { total: data.total, processed: counts.separated || 0, processing: counts.processing || 0, pending: (counts.new || 0) + (counts.resolved || 0) + (counts.downloaded || 0), failed: counts.failed || 0 }))}</span>
         </div>
-        <div class="search-row" style="margin-bottom:14px"><input class="input" id="lib-search" placeholder="${esc(libraryText('libFilterPlaceholder', '按歌名 / 歌手 / 专辑筛选'))}" value="${esc(q)}" /><button class="btn soft" id="lib-refresh">${esc(libraryText('libRefresh', '刷新'))}</button><button class="btn ghost" id="lib-cleanup" title="${esc(libraryText('libCleanupDesc', '扫描曲库，找出已删除歌曲遗留的产物文件'))}">${esc(libraryText('libCleanup', '清理残留'))}</button></div>
+        <div class="search-row" style="margin-bottom:14px"><input class="input" id="lib-search" placeholder="${esc(libraryText('libFilterPlaceholder', '按歌名 / 歌手 / 专辑筛选'))}" value="${esc(q)}" /><select id="lib-mv-filter" class="input" style="max-width:190px" title="${esc(libraryText('libMvFilterTitle', '只看某个 MV 状态的曲目'))}">
+            <option value="">${esc(libraryText('libMvFilterAll', 'MV：全部'))}</option>
+            ${['pending', 'auto_matched', 'manually_confirmed', 'not_found', 'unavailable'].map((key) => `<option value="${key}"${mvFilter === key ? ' selected' : ''}>${esc((VISUAL_STATUS_META[key] || VISUAL_STATUS_META.pending).label())} (${(data.visualCounts || {})[key] || 0})</option>`).join('')}
+          </select>
+          ${matchBarHtml(data)}
+          <button class="btn soft" id="lib-refresh">${esc(libraryText('libRefresh', '刷新'))}</button><button class="btn ghost" id="lib-cleanup" title="${esc(libraryText('libCleanupDesc', '扫描曲库，找出已删除歌曲遗留的产物文件'))}">${esc(libraryText('libCleanup', '清理残留'))}</button></div>
         <div class="lib-table">
-          <div class="lib-row lib-head"><div></div><div>${esc(libraryText('libColTrack', '曲目'))}</div><div>${esc(libraryText('libColStatus', '状态'))}</div><div>${esc(libraryText('libColLyrics', '歌词'))}</div><div>${esc(libraryText('libColDuration', '耗时'))}</div><div>${esc(libraryText('libColSize', '大小'))}</div><div>${esc(libraryText('libColMatch', '匹配分'))}</div><div>${esc(libraryText('libColActions', '操作'))}</div></div>
+          <div class="lib-row lib-head"><div></div><div>${esc(libraryText('libColTrack', '曲目'))}</div><div>${esc(libraryText('libColStatus', '状态'))}</div><div>${esc(libraryText('libColLyrics', '歌词'))}</div><div>${esc(libraryText('libColMv', 'MV'))}</div><div>${esc(libraryText('libColDuration', '耗时'))}</div><div>${esc(libraryText('libColSize', '大小'))}</div><div>${esc(libraryText('libColMatch', '匹配分'))}</div><div>${esc(libraryText('libColActions', '操作'))}</div></div>
           ${tracks.length ? tracks.map(track => `
             <div class="lib-row${track.status === 'processing' ? ' lib-processing' : ''}">
               <img class="song-thumb" src="${esc(track.cover || '')}" alt="">
@@ -1123,6 +1420,7 @@ async function refreshAdminLibrary(token) {
               </div>
               <div class="lib-status-cell">${libraryStatusBadge(track)}<div class="song-meta">${esc(track.statusText || '')}</div></div>
               <div class="lib-status-cell">${lyricsBadge(track)}</div>
+              <div class="lib-status-cell">${visualBadge(track)}</div>
               <div class="song-meta">${formatDuration(track.elapsedMs)}${track.rtf ? `<br><span class="muted">RTF ${track.rtf}</span>` : ''}</div>
               <div class="song-meta">${formatBytes(track.outputBytes || track.audioBytes)}</div>
               <div class="song-meta">${track.matchScore === null || track.matchScore === undefined ? '—' : Number(track.matchScore).toFixed(1)}</div>
@@ -1130,6 +1428,7 @@ async function refreshAdminLibrary(token) {
                 ${track.status === 'processing'
                   ? `<button class="btn small ghost lib-cancel" data-id="${esc(track.spotifyId)}" title="${esc(libraryText('libStopTitle', '中止后台制作（仅 DJ）'))}">${esc(libraryText('libStop', '停止'))}</button>`
                   : ''}
+                <button class="btn small soft lib-mv" data-id="${esc(track.spotifyId)}" title="${esc(libraryText('libMvShortTitle', '查看/更换官方 MV（视频模式背景）'))}">${esc(libraryText('libMvShort', 'MV'))}</button>
                 <button class="btn small soft lib-lyrics" data-id="${esc(track.spotifyId)}" title="${esc(libraryText('libRematchShortTitle', '改歌名/歌手后重新搜歌词'))}">${esc(libraryText('libRematchShort', '改词重搜'))}</button>
                 <button class="btn small danger lib-remove" data-id="${esc(track.spotifyId)}" title="${esc(libraryText('libDeleteTitle', '从曲库删除（含产物文件）'))}">${esc(libraryText('libDelete', '删除'))}</button>
               </div>
@@ -1141,11 +1440,49 @@ async function refreshAdminLibrary(token) {
       search.onkeydown = (event) => { if (event.key === 'Enter') refreshAdminLibrary(token); };
       search.oninput = () => { clearTimeout(libraryRefreshTimer); libraryRefreshTimer = setTimeout(() => refreshAdminLibrary(token), 250); };
     }
+    document.getElementById('lib-mv-filter')?.addEventListener('change', () => refreshAdminLibrary(token));
     document.getElementById('lib-refresh')?.addEventListener('click', () => refreshAdminLibrary(token));
+    // 一键匹配：后端串行跑，这里只负责发起/停止，进度靠 4s 轮询（页面在跑时会自动刷新）
+    document.getElementById('lib-match-start')?.addEventListener('click', async (event) => {
+      const button = event.currentTarget;
+      // 配额受限时按钮是**红色但仍可点**：先弹二次确认，DJ 确认后才带 force 强行重试。
+      // 服务端在 force 时会顺手清掉限流冷却，让官方 API 真的再试一次。
+      const needsConfirm = button.dataset.force === '1';
+      if (needsConfirm && !confirm(button.title || libraryText('libMatchForceQuota', 'YouTube 官方 API 今日配额已用完，继续匹配大概率会全部跳过。仍要强行重试？'))) {
+        return;
+      }
+      button.disabled = true;
+      try {
+        const r = await api('/api/library/admin/match', {
+          method: 'POST',
+          headers: { 'x-admin-token': token },
+          body: JSON.stringify({ kinds: ['mv', 'lyrics'], force: needsConfirm }),
+        });
+        const reasonText = r.reason === 'quota-exhausted' || r.reason === 'rate-limited'
+          ? libraryText('libMatchStillBlocked', '还是没能启动：YouTube 官方 API 仍然受限')
+          : libraryText('libMatchNothing', '没有需要匹配的歌曲');
+        toast(r.started
+          ? libraryFormat(libraryText('libMatchStarted', '已开始后台匹配 {count} 首'), { count: r.count })
+          : reasonText);
+      } catch (error) {
+        toast(error.code === 'MATCH_ALREADY_RUNNING'
+          ? libraryText('libMatchBusy', '已经有一批匹配任务在跑了')
+          : error.message);
+      } finally {
+        refreshAdminLibrary(token);
+      }
+    });
+    document.getElementById('lib-match-cancel')?.addEventListener('click', async () => {
+      try {
+        await api('/api/library/admin/match/cancel', { method: 'POST', headers: { 'x-admin-token': token }, body: '{}' });
+        toast(libraryText('libMatchCanceled', '已停止后台匹配'));
+      } catch (error) { toast(error.message); }
+      refreshAdminLibrary(token);
+    });
     document.getElementById('lib-cleanup')?.addEventListener('click', () => openOrphanCleanupDialog(token));
     content.querySelectorAll('.lib-remove').forEach(button => button.onclick = async () => {
       const removeTrack = tracks.find(t => t.spotifyId === button.dataset.id);
-      if (!confirm(libraryFormat(libraryText('libDeleteConfirm', '从曲库删除「{title}」？会同时删除成品音频、视频、封面、歌词和原始下载文件。'), { title: removeTrack?.title || button.dataset.id }))) return;
+      if (!confirm(libraryFormat(libraryText('libDeleteConfirm', '从曲库删除「{title}」？会同时删除成品音频、封面、歌词和原始下载文件。'), { title: removeTrack?.title || button.dataset.id }))) return;
       try { await api(`/api/library/admin/tracks/${encodeURIComponent(button.dataset.id)}`, { method: 'DELETE', headers: { 'x-admin-token': token } }); toast(libraryText('libDeleted', '已删除')); refreshAdminLibrary(token); }
       catch (error) {
         toast(error.code === 'NOT_FOUND'
@@ -1161,6 +1498,11 @@ async function refreshAdminLibrary(token) {
     content.querySelectorAll('.lib-lyrics').forEach(button => button.onclick = () => {
       const track = tracks.find(t => t.spotifyId === button.dataset.id);
       if (track) openLyricsRematchDialog(token, track);
+    });
+    // 官方 MV：查看 / 重新搜索 / 从候选选择 / 手填 / 确认 / 清除
+    content.querySelectorAll('.lib-mv').forEach(button => button.onclick = () => {
+      const track = tracks.find(t => t.spotifyId === button.dataset.id);
+      if (track) openMvDialog(token, track);
     });
     // 有任务在跑时自动刷新（制作中要看到阶段推进）；离开页面就停掉。
     if (libraryRefreshTimer) { clearInterval(libraryRefreshTimer); libraryRefreshTimer = null; }
@@ -1909,6 +2251,15 @@ async function initDisplay() {
   // 两者统一包装成同一套接口，render() 的同步逻辑因此不需要区分引擎：
   //   getCurrentTime() / seekTo(sec) / setVolume(0-1) / play() / pause() / destroy()
   let localMixer = null; let localMixerSongId = null; let localVocalPct = 25;
+  // ---- 人声滑块的"本地优先"保护 ----
+  // 拖滑块时本地值立刻变，但服务端的 SSE 还会继续推**旧值**（写回请求是节流的）。
+  // render() 以前无条件用服务端值覆盖 → 滑块被拽回上一次的值，
+  // 用户看到的就是"每动一下都闪一下，闪到原声"。
+  // 下面三个变量让本地值在一小段时间内（或拖动期间）压过服务端回显。
+  let vocalHoldPct = null;      // 本地刚设过、还没被服务端确认的值
+  let vocalHoldUntil = 0;       // 保持到什么时候（毫秒时间戳）
+  let vocalDragging = false;    // 正在拖（松手后还有一段兜底保持）
+  let vocalDragTimer = null;
   // admin: 已检查过逐字可用性的歌曲 id，避免每次 SSE 都发一次歌词请求
   let lastPreparingKey = null;
 
@@ -2049,16 +2400,30 @@ async function initDisplay() {
     btn.title = on ? localeText('lyricsNowWord', '当前逐字高亮，点击改为整行高亮') : localeText('lyricsNowLine', '当前整行高亮，点击改为逐字高亮');
     btn.dataset.wordLevel = on ? '1' : '0';
   }
+  /**
+   * 把「逐字/逐行」立刻作用到已挂载的视图。
+   *
+   * 视频模式没有 lyricsView，只有 videoMode；以前切换只改按钮文字 + 打服务端，
+   * 不重画视图，所以点了看不到任何变化（用户反馈"逐字/逐行点不了"）。
+   */
+  function applyWordLevelToViews(next) {
+    try { videoMode?.setWordLevel?.(next); } catch { /* ignore */ }
+    try {
+      if (lyricsView && typeof lyricsView.setWordLevel === 'function') lyricsView.setWordLevel(Boolean(next));
+    } catch { /* ignore */ }
+    try { syncLyricsModeButton(); } catch { /* ignore */ }
+  }
+
   async function toggleLyricsMode() {
     const next = !currentWordLevel();
     // 先本地切（立刻有反馈），失败再回滚
     if (lastState?.settings) lastState.settings.lyricsWordLevel = next;
-    syncLyricsModeButton();
+    applyWordLevelToViews(next);
     try {
       await api('/api/display/lyrics-mode', { method: 'POST', body: JSON.stringify({ wordLevel: next }) });
     } catch {
       if (lastState?.settings) lastState.settings.lyricsWordLevel = !next;
-      syncLyricsModeButton();
+      applyWordLevelToViews(!next);
     }
   }
 
@@ -2082,15 +2447,43 @@ async function initDisplay() {
       + '<span class="vocal-control-sep"></span>'
       + '<button type="button" class="vocal-control-preset" id="vocal-lyrics-mode" title="' + esc(localeText('lyricsModeSwitchTitle', '切换歌词显示方式（逐字 / 逐行）')) + '"></button>';
     const range = el.querySelector('#vocal-level');
-    if (range) range.addEventListener('input', () => applyVocalPercent(range.value, { persist: true }));
+    if (range) {
+      // 拖动期间把 vocalDragging 拉起来：松手后稍等再放下，
+      // 免得 SSE 恰好在松手那一瞬间把滑块拽回去。
+      const markDragging = () => {
+        vocalDragging = true;
+        clearTimeout(vocalDragTimer);
+        vocalDragTimer = setTimeout(() => { vocalDragging = false; }, 600);
+      };
+      range.addEventListener('pointerdown', markDragging);
+      range.addEventListener('touchstart', markDragging, { passive: true });
+      range.addEventListener('keydown', markDragging);
+      range.addEventListener('input', () => { markDragging(); applyVocalPercent(range.value, { persist: true }); });
+      range.addEventListener('change', () => {
+        clearTimeout(vocalDragTimer);
+        vocalDragTimer = setTimeout(() => { vocalDragging = false; }, 300);
+      });
+      range.addEventListener('pointerup', () => {
+        clearTimeout(vocalDragTimer);
+        vocalDragTimer = setTimeout(() => { vocalDragging = false; }, 300);
+      });
+    }
     el.querySelectorAll('[data-vocal-preset]').forEach(button => { button.addEventListener('click', () => applyVocalPercent(button.dataset.vocalPreset, { persist: true })); });
     const lyricsModeBtn = el.querySelector('#vocal-lyrics-mode');
     if (lyricsModeBtn) {
       syncLyricsModeButton();
       lyricsModeBtn.addEventListener('click', () => toggleLyricsMode());
     }
-    // 视频模式：滑块叠在视频上方（stage 里的 slot），否则挂在播放器容器底部
-    const slot = document.querySelector('.vlm-stage [data-vlm-vocal-slot]');
+    // 视频模式：工具栏必须挂进 stage 里的 slot（.vlm-vocal-slot，z-index 高于 MV iframe）。
+    // 以前这里查的选择器是 `.vlm-stage [data-vlm-vocal-slot]`（后代选择器），
+    // 而 slot 本身就是一个带 data-vlm-vocal-slot 的元素、且它是 stage 的子元素 ——
+    // 写法不对导致永远查不到，于是工具栏挂到了 #player 上：
+    //   * 被 MV iframe 盖住 → 按钮点不到（"逐字/逐行点了没反应"）
+    //   * 也没有 .vlm-vocal-slot .vocal-control 那套常驻可见样式
+    // 现在优先认 `.vlm-stage .vlm-vocal-slot` / `[data-vlm-vocal-slot]` 两种写法。
+    const slot = document.querySelector('.vlm-stage .vlm-vocal-slot')
+      || document.querySelector('[data-vlm-vocal-slot]')
+      || null;
     (slot || player).appendChild(el);
     applyVocalPercent(localVocalPct);
     // 刚出现时先亮着，2.6 秒后再进入沉浸态
@@ -2101,7 +2494,11 @@ async function initDisplay() {
   /** 显示/隐藏滑块：只有本地曲目能拆轨，YouTube 音轨拆不开，必须隐藏 */
   const toggleVocalControl = show => {
     if (!show) { document.getElementById('vocal-control')?.remove(); return; }
-    ensureVocalControl();
+    const el = ensureVocalControl();
+    // 视频模式下 slot 是后建的（mountVideoMode 才创建），如果之前挂到了 #player 上，
+    // 这里把它搬到 slot 里，保证 z-index 盖过 MV iframe、按钮可点。
+    const slot = document.querySelector('.vlm-stage .vlm-vocal-slot');
+    if (el && slot && el.parentElement !== slot) slot.appendChild(el);
   };
 
   /**
@@ -2121,9 +2518,36 @@ async function initDisplay() {
     el?.querySelectorAll('[data-vocal-preset]').forEach(button => { button.classList.toggle('on', Number(button.dataset.vocalPreset) === pct); });
     // 人声强度在 mixer 里是 0..1
     try { localMixer?.setVocalLevel?.(pct / 100); } catch {}
-    if (options.persist) persistVocalLevel(pct);
+    if (options.persist) {
+      // 用户主动改：本地值优先一段时（等服务端把新值回显回来再放开）
+      vocalHoldPct = pct;
+      vocalHoldUntil = Date.now() + 1500;
+      persistVocalLevel(pct);
+    }
     return pct;
   };
+
+  /**
+   * 服务端回显 → 是否应该接受（覆盖本地值）。
+   *
+   * 拖动中 / 刚设完的 1.5 秒内一律不接受，除非服务端正好等于我们设的值
+   * （那说明写回已经生效，可以解除保持）。
+   * 这就是"滑块不再被拽回原声"的关键。
+   */
+  function shouldAcceptServerVocal(serverPct) {
+    if (vocalDragging) return false;
+    if (vocalHoldPct == null) return true;
+    if (Math.abs(Number(serverPct) - vocalHoldPct) <= 1) {
+      // 服务端已经跟上我们的值 → 解除保持，以后完全听服务端的
+      vocalHoldPct = null;
+      vocalHoldUntil = 0;
+      return true;
+    }
+    if (Date.now() < vocalHoldUntil) return false;
+    vocalHoldPct = null;
+    vocalHoldUntil = 0;
+    return true;
+  }
 
   /** 把人声值写回服务端（节流：拖滑块时别每像素发一次请求） */
   let vocalPersistTimer = null;
@@ -2141,18 +2565,38 @@ async function initDisplay() {
   };
 
   // ===================== 模式 B · 视频 + 两行歌词（playbackMode: 'video'）=====================
-  /** 曲目详情 → 画面所需素材：视频 / 封面 / 歌词查询用的 videoId 与时长 */
+  /**
+   * 曲目 → 画面所需素材：
+   *   visualVideoId —— 官方 MV 的 YouTube videoId（IFrame 静音播放；不是本地文件）
+   *   coverUrl      —— 官方 MV 不可用时的模糊封面
+   * 注意：track.sourceVideoId 是**音频处理**用的 YouTube 源，与画面无关，绝不拿它当 MV。
+   */
   const videoModeAssets = (song, track) => {
     const id = song.spotifyId || '';
-    const videoId = (track && track.sourceVideoId) || null;
+    const visualVideoId = (song && song.visualVideoId) || (track && track.visualVideoId) || null;
     const cover = (track && track.cover) || (id ? `/media/covers/${encodeURIComponent(id)}.jpg` : (song.thumbnailUrl || ''));
     return {
-      // video.mp4 由后台流水线生成；不存在时 VideoLyricsMode 会退回封面背景
-      videoUrl: id ? `/media/output/library/${encodeURIComponent(id)}/video.mp4` : null,
+      visualVideoId,
+      visualMatchStatus: (track && track.visualMatchStatus) || (song && song.visualMatchStatus) || 'pending',
       coverUrl: cover,
-      videoId,
       durationSec: track && track.durationMs ? track.durationMs / 1000 : 0,
     };
+  };
+
+  /**
+   * 大屏报告"这个官方 MV 放不出来"：服务端把匹配状态写成 unavailable，
+   * 下次不再自动加载同一个坏视频。失败只写日志，绝不影响本地音频与歌词。
+   */
+  const reportedVisualErrors = new Set();
+  const reportVisualError = (spotifyId, detail) => {
+    if (!spotifyId || !detail || !detail.videoId) return;
+    const key = `${spotifyId}|${detail.videoId}`;
+    if (reportedVisualErrors.has(key)) return;
+    reportedVisualErrors.add(key);
+    api('/api/display/visual-error', {
+      method: 'POST',
+      body: JSON.stringify({ spotifyId, videoId: detail.videoId, reason: detail.reason || '', code: detail.code ?? null }),
+    }).catch(() => { /* 上报失败无所谓：播放器已经回退封面了 */ });
   };
 
   /** DJ 的「逐字/逐行」开关；默认开 */
@@ -2173,22 +2617,26 @@ async function initDisplay() {
     if (!videoMode || videoMode.root !== host) {
       destroyVideoMode();
       videoMode = new window.VideoLyricsMode(host, {
-                t: (key, fallback) => localeText(key, fallback),
-        videoUrl: assets.videoUrl,
+        t: (key, fallback) => localeText(key, fallback),
+        // 官方 MV（YouTube IFrame，静音）；null = 没有/未匹配/不可用 → 模糊封面
+        visualVideoId: assets.visualVideoId,
         coverUrl: assets.coverUrl,
         duration: assets.durationSec,
-        // 点画面跳转：只动 mixer，视频跟着走
+        // 点画面跳转：只动本地音频
         onSeek: sec => { try { if (activeEngine === 'local') localMixer?.seek?.(sec); } catch {} },
+        // MV 不可用：回退封面 + 上报服务端（写 visualMatchStatus=unavailable）
+        onVideoError: detail => reportVisualError(song.spotifyId, detail),
       });
       videoMode.mount();
       // DJ 的两个开关：歌词逐字/逐行、视频模式下是否显示歌词
       videoMode?.setWordLevel?.(lyricsWordLevelOn(state));
       videoMode?.setLyricsVisible?.(videoShowLyricsOn(state));
-      // 人声滑块挂进 stage 的 slot（视频上方）
+      // 人声滑块挂进 stage 的 slot（MV 上方）
       if (document.getElementById('vocal-control')) toggleVocalControl(true);
     } else {
       videoMode.setCover(assets.coverUrl);
-      videoMode.setVideo(assets.videoUrl);
+      // 只会「没有 → 有」或「同一首」：setVisualVideoId 内部判断，不会反复重建播放器
+      videoMode.setVisualVideoId(assets.visualVideoId);
       videoMode?.setWordLevel?.(lyricsWordLevelOn(state));
       videoMode?.setLyricsVisible?.(videoShowLyricsOn(state));
     }
@@ -2265,8 +2713,11 @@ async function initDisplay() {
       return null;
     }
     toggleVocalControl(true);
-    // 人声强度以服务端 playback.vocalLevel 为准（DJ 控制台可调，SSE 会推过来）
-    if (typeof state.playback?.vocalLevel === 'number') localVocalPct = state.playback.vocalLevel;
+    // 人声强度以服务端 playback.vocalLevel 为准（DJ 控制台可调，SSE 会推过来）；
+    // 但刚拖过滑块、还没被服务端确认时，别用旧值把用户刚设的值顶掉。
+    if (typeof state.playback?.vocalLevel === 'number' && shouldAcceptServerVocal(state.playback.vocalLevel)) {
+      localVocalPct = state.playback.vocalLevel;
+    }
     applyVocalPercent(localVocalPct);
     if (videoModeOn) {
       mountVideoMode(state, null);
@@ -2302,11 +2753,12 @@ async function initDisplay() {
       vocalsUrl: audio.vocals,
       // 视频模式的歌词与视频同步全部由这里驱动：mixer 每 50ms 报一次时间
       onTimeUpdate: (sec, duration) => {
+        // 只用来推进歌词；MV 不跟时间轴（不做 seek/校正），见 video-lyrics-mode.js
         try { videoMode?.update?.(sec); } catch {}
         if (duration) try { videoMode.duration = duration; } catch {}
       },
-      // 播完 → 通知服务端切下一首（与 YouTube onStateChange data===0 的 report(id,'ended') 一致）
-      onEnded: () => { try { videoMode?.setPlaying?.(false); } catch {} report(song.id, 'ended'); }
+      // 播完 → 先停 MV（MV 比歌长时随歌结束停止），再通知服务端切下一首
+      onEnded: () => { try { videoMode?.stopVideo?.(); videoMode?.setPlaying?.(false); } catch {} report(song.id, 'ended'); }
     });
     // 统一播放引擎接口：mixer 只有 seek()，没有 YouTube 的 seekTo()
     mixer.seekTo = sec => mixer.seek(sec);
@@ -2317,7 +2769,7 @@ async function initDisplay() {
       // 坑 1：state.playback.volume 是 0–100，mixer.setVolume() 要 0–1
       mixer.setVolume((Number(state.playback.volume) || 0) / 100);
       applyVocalPercent(localVocalPct);
-      // 视频模式：音频解码完才挂视频与歌词（视频源按曲库详情里的 sourceVideoId 拼）
+      // 视频模式：音频解码完才挂 MV 与歌词（MV 来自曲库的 visualVideoId，与音频来源无关）
       if (videoModeOn) {
         mountVideoMode(state, track);
         try { videoMode.duration = mixer.duration; } catch {}
@@ -2341,7 +2793,8 @@ async function initDisplay() {
           });
         });
       }
-      // 视频跟随 mixer 的播放状态（mixer.play() 已 await，这里拿到的是真实状态）
+      // MV 跟随 mixer 的播放状态（mixer.play() 已 await，这里拿到的是真实状态）。
+      // MV 只是背景：它出错/没就绪时 setPlaying 内部直接返回，不影响本地播放。
       try { videoMode?.setPlaying?.(Boolean(mixer.playing) && !state.importantBroadcast); } catch {}
     } catch (error) {
       console.error('[display] 本地音频解码失败', error);
@@ -2414,7 +2867,7 @@ async function initDisplay() {
     applyDisplayLanguage(); lastState = state; return; } // 有歌在播：准备中画面的"同一首歌只画一次"缓存必须失效。
     // 否则播完/切歌回到「没有 current、下一首还在制作」时，会因为 key 和上次相同而提前 return，
     // 但播放器 DOM 已经被上一位的播放器替换掉 → 大屏直接黑屏，不显示「处理中」。
-    lastPreparingKey = null; const nextPlaybackMode = isLocalSong(state.current) ? (isLyricsMode(state) ? 'local-lyrics' : 'local-video') : (isLyricsMode(state) ? 'lyrics' : 'video'); const modeChanged = appliedPlaybackMode !== null && appliedPlaybackMode !== nextPlaybackMode; appliedPlaybackMode = nextPlaybackMode; const becameReady = engineSong?.id === state.current.id && engineSong?.status === 'preparing' && state.current.status !== 'preparing'; if (modeChanged && state.current) { resetPlayback(); currentRequestId = state.current.id; mountPlayer(state); } else if (currentRequestId !== state.current.id) { resetPlayback(); currentRequestId = state.current.id; mountPlayer(state); } else if (becameReady) { resetPlayback(); currentRequestId = state.current.id; mountPlayer(state); } else if (activeEngine === 'local') { if (state.playback.status === 'paused') { localMixer?.pause?.(); try { videoMode?.setPlaying?.(false); } catch {} } if (state.playback.status === 'playing') { localMixer?.play?.().catch(() => {}); try { videoMode?.setPlaying?.(!state.importantBroadcast); } catch {} } localMixer?.setVolume?.((Number(state.playback.volume) || 0) / 100); if (typeof state.playback.vocalLevel === 'number' && state.playback.vocalLevel !== localVocalPct) applyVocalPercent(state.playback.vocalLevel); } else if (playerInstance) { if (state.playback.status === 'paused') playerInstance.pauseVideo?.(); if (state.playback.status === 'playing') playerInstance.playVideo?.(); playerInstance.setVolume?.(state.playback.volume); } if (isLocalSong(state.current) && !isLyricsMode(state)) mountVideoMode(state, null); else if (isLyricsMode(state) || isLocalSong(state.current)) mountLyricsView(state); // DJ 改了「逐字/逐行」或「视频歌词开/关」时，立刻作用到已挂载的视图
+    lastPreparingKey = null; const nextPlaybackMode = isLocalSong(state.current) ? (isLyricsMode(state) ? 'local-lyrics' : 'local-video') : (isLyricsMode(state) ? 'lyrics' : 'video'); const modeChanged = appliedPlaybackMode !== null && appliedPlaybackMode !== nextPlaybackMode; appliedPlaybackMode = nextPlaybackMode; const becameReady = engineSong?.id === state.current.id && engineSong?.status === 'preparing' && state.current.status !== 'preparing'; if (modeChanged && state.current) { resetPlayback(); currentRequestId = state.current.id; mountPlayer(state); } else if (currentRequestId !== state.current.id) { resetPlayback(); currentRequestId = state.current.id; mountPlayer(state); } else if (becameReady) { resetPlayback(); currentRequestId = state.current.id; mountPlayer(state); } else if (activeEngine === 'local') { if (state.playback.status === 'paused') { localMixer?.pause?.(); try { videoMode?.setPlaying?.(false); } catch {} } if (state.playback.status === 'playing') { localMixer?.play?.().catch(() => {}); try { videoMode?.setPlaying?.(!state.importantBroadcast); } catch {} } localMixer?.setVolume?.((Number(state.playback.volume) || 0) / 100); if (typeof state.playback.vocalLevel === 'number' && state.playback.vocalLevel !== localVocalPct && shouldAcceptServerVocal(state.playback.vocalLevel)) applyVocalPercent(state.playback.vocalLevel); } else if (playerInstance) { if (state.playback.status === 'paused') playerInstance.pauseVideo?.(); if (state.playback.status === 'playing') playerInstance.playVideo?.(); playerInstance.setVolume?.(state.playback.volume); } if (isLocalSong(state.current) && !isLyricsMode(state)) mountVideoMode(state, null); else if (isLyricsMode(state) || isLocalSong(state.current)) mountLyricsView(state); // DJ 改了「逐字/逐行」或「视频歌词开/关」时，立刻作用到已挂载的视图
     try { videoMode?.setWordLevel?.(lyricsWordLevelOn(state)); videoMode?.setLyricsVisible?.(videoShowLyricsOn(state)); } catch {}
     try { if (lyricsView && typeof lyricsView.setWordLevel === 'function') { const want = lyricsWordLevelOn(state); if (lyricsView.state.wordLevel !== want) { lyricsView.setWordLevel(want); } } } catch {}
     try { if (lyricsView && typeof lyricsView.setShowTranslation === 'function') { const want = state.settings?.showTranslation !== false; if (lyricsView.state.showTranslation !== want) lyricsView.setShowTranslation(want); } } catch {}

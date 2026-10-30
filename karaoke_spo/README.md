@@ -16,7 +16,8 @@
 
 > 本工程已并入 `D:\Projects\Karaduoke` 双模式项目。
 > **启动入口在项目根**：双击 `Karaduoke\启动卡拉OK.cmd`（控制面板 8787，可切换 A/B 模式）。
-> 也可以在本目录直接 `node main.js` 单独跑服务（不使用控制面板）。
+> 也可以在本目录直接 
+ode main.js` 单独跑服务（不使用控制面板）。
 
 服务端口由项目根 `config\config.json` 统一管理（A/B 两个模式共用同一个端口，默认 **3100**）。
 
@@ -27,22 +28,27 @@ karaoke_spo\
 ├── server.js                  服务端（含模式 B 定制）
 ├── main.js                    直接启动服务的入口
 ├── public\                    前台页面（admin / join / display）
-│   ├── lyrics-view.js/css     歌词视图
+│   ├── lyrics-view.js/css     歌词视图（Apple Music 风格）
+│   ├── video-lyrics-mode.js/css  视频模式：YouTube 官方 MV（静音）+ 两行歌词
 │   ├── karaoke-mixer.js       Web Audio 双源混音
 │   └── lyrics-preview.html    歌词/混音预览页
 ├── lib\
-│   ├── library-db.js          曲库只读访问（node:sqlite）
+│   ├── library-db.js          曲库访问（node:sqlite，含官方 MV 读写）
+│   ├── official-mv.js         官方 MV Resolver（搜索 / 评分 / 状态机）
+│   ├── youtube.js             YouTube Data API 唯一客户端（配额 / 缓存）
+│   ├── ytmusic.js             YouTube Music（ytmusicapi）候选源，**免配额**
 │   ├── qrc-decrypt.js         QQ QRC 逐字歌词解密
 │   ├── qq-lyrics.js           歌词源
 │   └── spotify.js             Spotify 元数据
 ├── python\
-│   ├── .venv-xpu\             Python 环境（torch+xpu + demucs，5.2 GB）
+│   ├── （环境在项目根 env\python）
 │   ├── library.py             SQLite 数据层
 │   ├── schema.sql             表结构
 │   └── worker.py              常驻分离 worker
 ├── scripts\
-│   ├── pipeline.py            五步流水线（一条命令）
-│   ├── fetch_audio.py         YouTube 匹配下载
+│   ├── pipeline.py            流水线（metadata/download/lyrics/separate/finalize/cleanup）
+│   ├── fetch_audio.py         YouTube 匹配下载 → 44.1k WAV（只管音频，不下视频）
+│   ├── ytmusic_mv.py          官方 MV 候选搜索（ytmusicapi，免配额；stdin/stdout JSON）
 │   ├── fetch_metadata.py      Spotify 元数据 + 封面
 │   ├── fetch_lyrics.py        lrclib 歌词
 │   └── finalize_track.py      混音 + MP3 编码
@@ -73,14 +79,23 @@ python\.venv-xpu\Scripts\python.exe scripts\pipeline.py `
 
 `--title` 可省略——歌名、歌手、专辑、时长、封面全部由 Spotify API 提供。
 
-五个步骤幂等，重复跑不会重做已完成的部分。
+各步骤幂等，重复跑不会重做已完成的部分。cleanup 会在确认 4 个 MP3 合格后
+删除音频处理输入（data/library/<videoId>.wav）和下载中间文件；--keep-audio 可保留。
+
+官方 MV 不在这条流水线里：它由 Node 侧 lib/official-mv.js 单独匹配，
+经 YouTube IFrame 静音在线播放，不下载（见 ../docs/official-mv.md）。
 
 ## 测试
 
 ```powershell
-node tests\playback-lyrics.test.js      # 15 passed
-node tests\library-mode.test.js         # 13 passed
-python\.venv-xpu\Scripts\python.exe tests\test_library.py   # 9 passed
+node tests\playback-lyrics.test.js        # 16 passed
+node tests\library-mode.test.js           # 12 passed
+node tests\official-mv.test.js            # 25 passed（官方 MV 评分 / 状态机）
+node tests\official-mv-api.test.js        # 14 passed（MV 管理接口）
+node tests\ytmusic-mv.test.js             # 13 passed（YouTube Music 免配额源 / 两段式兜底）
+node tests\video-lyrics-mv.test.js        # 20 passed（视频模式播放器）
+..\env\python\Scripts\python.exe tests\test_library.py            # 11 passed
+..\env\python\Scripts\python.exe tests\test_pipeline_cleanup.py   # 10 passed（临时文件清理）
 ```
 
 ## 关键设计
@@ -109,15 +124,33 @@ Demucs 四轨严格加性分解（`drums+bass+other+vocals ≈ mix`），所以�
 | 字段 | 本工程取值 | 说明 |
 | --- | --- | --- |
 | `sourceMode` | 固定 `local` | 只走本地曲库 |
-| `playbackMode` | 固定 `lyrics` | 本地曲目没有视频 |
+| `playbackMode` | `video` / `lyrics`（DJ 可切） | video = YouTube 官方 MV（静音）+ 两行歌词；lyrics = 仿 Apple Music |
+| `visual_video_id` | 由 `lib/official-mv.js` 匹配 | 官方 MV 的 YouTube videoId；与音频来源 `source_video_id` 无关 |
+
+### 官方 MV 的两个候选源（为什么要有第二个）
+
+官方 Data API 的 `search.list` 一次 100 单位、每天 10,000 单位，批量匹配很容易打光。
+所以 **YouTube Music（ytmusicapi）优先、官方 Data API 兜底**：
+
+```
+① scripts/ytmusic_mv.py（Python 子进程）→ 无每日配额，且结果带 videoType（官方 MV / Art track / 用户上传）
+② lib/youtube.js（官方 Data API）        → ① 拿不到候选时才用
+```
+
+官方 API 配额打满时，曲库页「一键匹配」按钮会变**红色**（不是禁用），点下去弹二次确认，
+确认后强行重试 —— 因为 ① 不占配额，这时依然能匹配成功。
+`KARAOKE_YTMUSIC=0` 可关掉①，退回纯官方 API 行为。
 
 ## 已知边界
 
-1. **封面是 Spotify 专辑图**（640×640），不是视频截图
-2. **逐字歌词依赖 QQ 音乐**，会限流；拿到后落盘缓存
-3. **分离需要 XPU**（Intel Arc iGPU），CPU 下 RTF 慢 10 倍以上
-4. **`onlyKaraokeSongs` 强制关闭**——本地曲目名不含 "karaoke"
-5. 已在播放的歌可以再点一次（0.3.8 原有语义，去重只查 `queued`）
+1. **MV 是 YouTube 在线播放**：断网 / 视频下架 / 不允许嵌入时退回模糊专辑封面（K 歌不受影响）
+1. **ytmusicapi 需要 Python 包**：`env\python\Scripts\python.exe -m pip install ytmusicapi`。
+   没装时日志会提示，并自动只用官方 API（曲库页能看到 `ytmusic.available=false`）
+2. **封面是 Spotify 专辑图**（640×640）
+3. **逐字歌词依赖 QQ 音乐**，会限流；拿到后落盘缓存
+4. **分离需要 XPU**（Intel Arc iGPU），CPU 下 RTF 慢 10 倍以上
+5. **`onlyKaraokeSongs` 强制关闭**——本地曲目名不含 "karaoke"
+6. 已在播放的歌可以再点一次（0.3.8 原有语义，去重只查 `queued`）
 
 ## 与模式 A 的关系
 

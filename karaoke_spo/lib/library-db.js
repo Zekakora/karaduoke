@@ -162,9 +162,24 @@ function toPublic(row) {
     hasVocals: Boolean(row.has_vocals),
     hasAccompaniment: Boolean(row.has_accompaniment),
     ready: Boolean(row.has_vocals && row.has_accompaniment),
-    // 源 YouTube 视频（模式 B 的 video.mp4 就是从它截的；也用于歌词查询按 videoId 命中）
+    // 音频处理用的 YouTube 源（fetch_audio 下载 MP4 → 提取音频 → Demucs），与画面无关
     sourceVideoId: row.source_video_id || null,
+    // 官方 MV（视频模式的背景画面，YouTube IFrame 静音播放，不下载）。
+    // 老库没有这一列时调用方会拿到 undefined → 走 pending 兜底。
+    visualVideoId: row.visual_video_id || null,
+    visualMatchStatus: row.visual_match_status || 'pending',
   };
+}
+
+/** 曲库是否已经迁移出官方 MV 的列（老库可能在服务运行期间被 Python 侧补上） */
+function hasVisualColumns(conn = open()) {
+  if (!conn) return false;
+  try {
+    const cols = conn.prepare('PRAGMA table_info(tracks)').all().map((c) => c.name);
+    return cols.includes('visual_video_id');
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -178,10 +193,15 @@ function listTracks(opts = {}) {
   const limit = Math.min(Math.max(1, Number(opts.limit) || 100), 500);
   const q = String(opts.q || '').trim();
 
-  // stems 表按 (track_id, model) 唯一；取最新一条判断是否有人声/伴奏
+  // stems 表按 (track_id, model) 唯一；取最新一条判断是否有人声/伴奏。
+  // visual_* 是新列：老库还没迁移时用空值代替，避免整张列表 500。
+  const visualCols = hasVisualColumns(conn)
+    ? 't.visual_video_id, t.visual_match_status'
+    : "NULL AS visual_video_id, 'pending' AS visual_match_status";
   const sql = `
     SELECT t.spotify_id, t.title, t.artists, t.album, t.duration_ms, t.album_art,
            t.album_art_path, t.release_date, t.popularity, t.match_score, t.status,
+           ${visualCols},
            s.vocals_path IS NOT NULL AND s.vocals_path <> '' AS has_vocals,
            s.no_vocals_path IS NOT NULL AND s.no_vocals_path <> '' AS has_accompaniment
       FROM tracks t
@@ -212,12 +232,15 @@ function getTrack(spotifyId) {
   if (!conn) return null;
   const id = String(spotifyId || '');
   if (!/^[A-Za-z0-9]{22}$/.test(id)) return null;
+  const visualCols = hasVisualColumns(conn)
+    ? 't.visual_video_id, t.visual_match_status'
+    : "NULL AS visual_video_id, 'pending' AS visual_match_status";
   let row;
   try {
     row = conn.prepare(`
       SELECT t.spotify_id, t.title, t.artists, t.album, t.duration_ms, t.album_art,
              t.album_art_path, t.release_date, t.popularity, t.match_score, t.status,
-             t.source_video_id,
+             t.source_video_id, ${visualCols},
              s.vocals_path IS NOT NULL AND s.vocals_path <> '' AS has_vocals,
              s.no_vocals_path IS NOT NULL AND s.no_vocals_path <> '' AS has_accompaniment
         FROM tracks t LEFT JOIN stems s ON s.track_id = t.id
@@ -233,7 +256,182 @@ function getTrack(spotifyId) {
     guide: `/media/output/library/${id}/guide.mp3`,
     original: `/media/output/library/${id}/original.mp3`,
   } : null;
+  // 官方 MV 的完整元数据（画面来源，与 sourceVideoId 无关）
+  out.visual = getVisual(id) || visualFallback();
   return out;
+}
+
+/** 没有 visual 记录时的兜底形状（老库 / 还没跑过匹配） */
+function visualFallback() {
+  return {
+    visualVideoId: null,
+    visualMatchStatus: 'pending',
+    visualMatchScore: null,
+    visualVideoTitle: null,
+    visualChannelTitle: null,
+    visualDuration: null,
+    visualMatchReason: null,
+    visualMatchedAt: null,
+    candidates: [],
+  };
+}
+
+function parseJsonArray(raw) {
+  if (!raw) return [];
+  try {
+    const value = JSON.parse(raw);
+    return Array.isArray(value) ? value : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * 读一首歌的官方 MV 记录（**原始行为**，candidates 已解析为数组）。
+ * 没有记录 / 老库没有这些列 → null。
+ */
+function getVisualRow(spotifyId) {
+  const conn = open();
+  if (!conn) return null;
+  const id = String(spotifyId || '');
+  if (!/^[A-Za-z0-9]{22}$/.test(id)) return null;
+  if (!hasVisualColumns(conn)) return null;
+  try {
+    const row = conn.prepare(`
+      SELECT t.spotify_id, t.title, t.artists, t.album, t.duration_ms, t.release_date,
+             t.visual_video_id, t.visual_match_status, t.visual_match_score, t.visual_video_title,
+             t.visual_channel_title, t.visual_duration, t.visual_match_reason, t.visual_matched_at,
+             t.visual_candidates
+        FROM tracks t WHERE t.spotify_id = ?`).get(id);
+    if (!row) return null;
+    return {
+      spotifyId: row.spotify_id,
+      title: row.title,
+      artists: parseArtists(row.artists),
+      album: row.album || null,
+      durationMs: row.duration_ms || null,
+      releaseDate: row.release_date || null,
+      visual_video_id: row.visual_video_id || null,
+      visual_match_status: row.visual_match_status || 'pending',
+      visual_match_score: row.visual_match_score ?? null,
+      visual_video_title: row.visual_video_title || null,
+      visual_channel_title: row.visual_channel_title || null,
+      visual_duration: row.visual_duration ?? null,
+      visual_match_reason: row.visual_match_reason || null,
+      visual_matched_at: row.visual_matched_at || null,
+      visual_candidates: row.visual_candidates || null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 读一首歌的官方 MV（前端形状）。没有记录时返回 null —— 调用方用 visualFallback() 兜底。
+ */
+function getVisual(spotifyId) {
+  const conn = open();
+  const row = getVisualRow(spotifyId);
+  if (!row || !conn) return null;
+  return {
+    visualVideoId: row.visual_video_id,
+    visualMatchStatus: row.visual_match_status,
+    visualMatchScore: row.visual_match_score,
+    visualVideoTitle: row.visual_video_title,
+    visualChannelTitle: row.visual_channel_title,
+    visualDuration: row.visual_duration,
+    visualMatchReason: row.visual_match_reason,
+    visualMatchedAt: row.visual_matched_at,
+    candidates: parseJsonArray(row.visual_candidates),
+  };
+}
+
+const VISUAL_STATUSES = ['pending', 'auto_matched', 'manually_confirmed', 'not_found', 'unavailable'];
+
+/**
+ * 写官方 MV 记录（Node 侧写，与 deleteTrack 一样用独立短连接）。
+ *
+ * 并发约定与 Python 侧（python/library.py update_visual）保持一致：
+ *   - 默认不覆盖 manually_confirmed（管理员确认过的不许被自动匹配改动）；
+ *   - status='unavailable' 总是允许写（视频挂了必须记下来，否则每次播放都重试它）；
+ *   - force=true 是管理员主动操作，覆盖一切。
+ *
+ * @param {string} spotifyId
+ * @param {{status?: string, videoId?: string|null, videoTitle?: string|null, channelTitle?: string|null,
+ *          duration?: number|null, score?: number|null, reason?: string|null, candidates?: Array|null,
+ *          force?: boolean, clear?: boolean}} patch
+ * @returns {{ok: boolean, reason?: string, visual?: object}}
+ */
+function updateVisual(spotifyId, patch = {}) {
+  const id = String(spotifyId || '');
+  if (!/^[A-Za-z0-9]{22}$/.test(id)) return { ok: false, reason: 'BAD_SPOTIFY_ID' };
+  if (patch.status !== undefined && patch.status !== null && !VISUAL_STATUSES.includes(patch.status)) {
+    return { ok: false, reason: 'BAD_STATUS' };
+  }
+  if (patch.videoId != null && patch.videoId !== '' && !/^[A-Za-z0-9_-]{11}$/.test(String(patch.videoId))) {
+    return { ok: false, reason: 'BAD_VIDEO_ID' };
+  }
+  const conn = openWritable();
+  if (!conn) return { ok: false, reason: 'no-db' };
+  try {
+    if (!hasVisualColumns(conn)) return { ok: false, reason: 'NO_VISUAL_COLUMNS' };
+    const row = conn.prepare('SELECT id, visual_match_status FROM tracks WHERE spotify_id = ?').get(id);
+    if (!row) return { ok: false, reason: 'TRACK_NOT_FOUND' };
+    const current = row.visual_match_status || 'pending';
+    const force = Boolean(patch.force);
+    if (!force && patch.status !== 'unavailable' && current === 'manually_confirmed') {
+      // 管理员已确认：自动结果不覆盖，如实返回现状
+      return { ok: true, visual: getVisual(id) || visualFallback(), unchanged: true };
+    }
+
+    const stamp = new Date().toISOString().slice(0, 19).replace('T', ' ');
+    if (patch.clear) {
+      conn.prepare(`UPDATE tracks SET visual_video_id = NULL, visual_match_status = 'pending',
+        visual_match_score = NULL, visual_video_title = NULL, visual_channel_title = NULL,
+        visual_duration = NULL, visual_match_reason = NULL, visual_matched_at = NULL,
+        visual_candidates = NULL, updated_at = datetime('now') WHERE id = ?`).run(row.id);
+      return { ok: true, visual: getVisual(id) || visualFallback() };
+    }
+
+    const sets = [];
+    const params = [];
+    const put = (column, value) => { sets.push(`${column} = ?`); params.push(value); };
+    // 同时接受驼峰（videoId / videoTitle…）和数据库列名（video_id / video_title…）两种写法：
+    // lib/official-mv.js 用的是列名风格，这里统一取第一个存在的键（曾因只认驼峰导致 videoId 被静默丢弃）。
+    const pick = (...keys) => keys.find((key) => patch[key] !== undefined);
+    const keyVideo = pick('videoId', 'video_id');
+    if (keyVideo) put('visual_video_id', patch[keyVideo] ? String(patch[keyVideo]) : null);
+    const keyTitle = pick('videoTitle', 'video_title');
+    if (keyTitle) put('visual_video_title', patch[keyTitle] || null);
+    const keyChannel = pick('channelTitle', 'channel_title');
+    if (keyChannel) put('visual_channel_title', patch[keyChannel] || null);
+    const keyDuration = pick('duration', 'visualDuration');
+    if (keyDuration) put('visual_duration', patch[keyDuration] == null ? null : Number(patch[keyDuration]));
+    const keyScore = pick('score', 'visualMatchScore');
+    if (keyScore) put('visual_match_score', patch[keyScore] == null ? null : Math.round(Number(patch[keyScore]) * 100) / 100);
+    const keyReason = pick('reason', 'visualMatchReason');
+    if (keyReason) put('visual_match_reason', patch[keyReason] || null);
+    if (patch.candidates !== undefined) put('visual_candidates', JSON.stringify(patch.candidates || []).slice(0, 200000));
+    if (patch.status) {
+      put('visual_match_status', patch.status);
+      put('visual_matched_at', stamp);
+    }
+    // 明确"没有可用的 MW 了"（播放端报错且没有 videoId）：把 id 清空，
+    // 否则下次播放还会自动加载同一个坏视频。
+    if (patch.status === 'unavailable' && !keyVideo) {
+      put('visual_video_id', null);
+      if (!keyReason && patch.reason) put('visual_match_reason', patch.reason);
+    }
+    if (!sets.length) return { ok: true, visual: getVisual(id) || visualFallback() };
+    sets.push("updated_at = datetime('now')");
+    params.push(row.id);
+    conn.prepare(`UPDATE tracks SET ${sets.join(', ')} WHERE id = ?`).run(...params);
+    return { ok: true, visual: getVisual(id) || visualFallback() };
+  } catch (error) {
+    return { ok: false, reason: 'db-error', error: error.message };
+  } finally {
+    try { conn.close(); } catch { /* ignore */ }
+  }
 }
 
 /** 曲目处理状态（DB 里的 tracks.status）→ 中文/英文展示文案 */
@@ -260,14 +458,21 @@ function adminTracks(opts = {}) {
   const limit = Math.min(Math.max(1, Number(opts.limit) || 200), 1000);
   const q = String(opts.q || '').trim();
   const like = `%${q}%`;
+  const visualCols = hasVisualColumns(conn)
+    ? `t.visual_video_id, t.visual_match_status, t.visual_match_score, t.visual_video_title,
+       t.visual_channel_title, t.visual_duration, t.visual_match_reason, t.visual_matched_at`
+    : `NULL AS visual_video_id, 'pending' AS visual_match_status, NULL AS visual_match_score,
+       NULL AS visual_video_title, NULL AS visual_channel_title, NULL AS visual_duration,
+       NULL AS visual_match_reason, NULL AS visual_matched_at`;
   let rows;
   try {
-    // 每首歌：tracks 行 + 最新 stems 行 + 最后一次失败原因（jobs 表）+ 歌词情况
+    // 每首歌：tracks 行 + 最新 stems 行 + 最后一次失败原因（jobs 表）+ 歌词情况 + 官方 MV
     rows = conn.prepare(`
       SELECT t.spotify_id, t.title, t.artists, t.album, t.album_art, t.album_art_path,
              t.release_date, t.popularity, t.match_score, t.status, t.error,
              t.duration_ms, t.audio_bytes, t.audio_path,
              t.source_video_id, t.source_url, t.source_title, t.created_at, t.updated_at,
+             ${visualCols},
              s.model, s.device, s.rtf, s.processing_s, s.input_duration_s, s.out_dir,
              s.vocals_path, s.no_vocals_path,
              s.vocals_path IS NOT NULL AND s.vocals_path <> '' AS has_vocals,
@@ -332,13 +537,23 @@ function adminTracks(opts = {}) {
       sourceVideoId: row.source_video_id || null,
       sourceUrl: row.source_url || null,
       sourceTitle: row.source_title || null,
+      // 官方 MV（画面来源）：状态/评分/标题/频道/时长，供曲库页「MV」列与弹窗显示
+      visualVideoId: row.visual_video_id || null,
+      visualMatchStatus: row.visual_match_status || 'pending',
+      visualMatchScore: row.visual_match_score ?? null,
+      visualVideoTitle: row.visual_video_title || null,
+      visualChannelTitle: row.visual_channel_title || null,
+      visualDuration: row.visual_duration ?? null,
+      visualMatchReason: row.visual_match_reason || null,
+      visualMatchedAt: row.visual_matched_at || null,
       createdAt: row.created_at || null,
       updatedAt: row.updated_at || null,
     };
   });
 
   const counts = tracks.reduce((acc, t) => { acc[t.status] = (acc[t.status] || 0) + 1; return acc; }, {});
-  return { available: true, dbPath, total: tracks.length, counts, statusText: STATUS_TEXT, tracks };
+  const visualCounts = tracks.reduce((acc, t) => { acc[t.visualMatchStatus] = (acc[t.visualMatchStatus] || 0) + 1; return acc; }, {});
+  return { available: true, dbPath, total: tracks.length, counts, visualCounts, statusText: STATUS_TEXT, tracks };
 }
 
 /**
@@ -400,7 +615,7 @@ const LYRICS_EXTS = ['.lrc', '.yrc', '.qrc'];
 
 /** 扫描目标。key 是清理接口的定位标识，root 由调用方给的根目录推导。 */
 const ORPHAN_TARGETS = [
-  { key: 'output', label: '成品音频 / 视频', hint: 'assets/output/library/<spotifyId>/', mode: 'dir', under: ['output', 'library'] },
+  { key: 'output', label: '成品音频', hint: 'assets/output/library/<spotifyId>/', mode: 'dir', under: ['output', 'library'] },
   { key: 'covers', label: '封面', hint: 'assets/covers/<spotifyId>.jpg', mode: 'file', under: ['covers'], exts: ['.jpg'] },
   { key: 'lyrics', label: '歌词文件', hint: `assets/lyrics/<spotifyId>${LYRICS_EXTS.join(' / ')}`, mode: 'file', under: ['lyrics'], exts: LYRICS_EXTS },
 ];
@@ -661,4 +876,9 @@ function purgeFiles(paths, opts = {}) {
   };
 }
 
-module.exports = { open, close, deleteTrack, listTracks, getTrack, getLyrics, summary, adminTracks, scanOrphans, purgeFiles, STATUS_TEXT, resolvePath, songKeySupported: true };
+module.exports = {
+  open, close, deleteTrack, listTracks, getTrack, getLyrics, summary, adminTracks, scanOrphans, purgeFiles,
+  // 官方 MV（visualVideoId）：读写与状态常量，见 lib/official-mv.js
+  getVisual, getVisualRow, updateVisual, hasVisualColumns, visualFallback, VISUAL_STATUSES,
+  STATUS_TEXT, resolvePath, songKeySupported: true,
+};

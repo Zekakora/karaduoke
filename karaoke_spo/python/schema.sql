@@ -24,12 +24,25 @@ CREATE TABLE IF NOT EXISTS tracks (
   uri               TEXT,
   isrc              TEXT,
   -- 音频来源（来自 YouTube / 备份站）
+  -- source_video_id 是**音频处理**用的 YouTube 视频（下载 MP4 → 提取音频 → Demucs），
+  -- 与下面的 visual_*（官方 MV，纯画面）完全独立，互不覆盖。
   source            TEXT,                          -- 'youtube' | 'spotriff' | 'local'
   source_video_id   TEXT,
   source_url        TEXT,
   source_title      TEXT,
   match_score       REAL,                          -- 0~100，匹配度
   match_reason      TEXT,                          -- 人类可读的匹配理由
+  -- 官方 MV（模式 B 视频模式的背景画面；只经 YouTube IFrame 在线播放，不下载）
+  visual_video_id      TEXT,                       -- YouTube videoId（11 位）
+  visual_match_status  TEXT NOT NULL DEFAULT 'pending',
+      -- pending | auto_matched | manually_confirmed | not_found | unavailable
+  visual_match_score   REAL,                       -- 0~100，可解释评分
+  visual_video_title   TEXT,
+  visual_channel_title TEXT,
+  visual_duration      INTEGER,                    -- 秒
+  visual_match_reason  TEXT,                       -- 人类可读的评分明细
+  visual_matched_at    TEXT,
+  visual_candidates    TEXT,                       -- JSON 数组：上次搜索的候选（管理员挑选用）
   -- 本地文件
   audio_path        TEXT,                          -- 原始下载（44.1k WAV）
   audio_bytes       INTEGER,
@@ -47,6 +60,7 @@ CREATE INDEX IF NOT EXISTS idx_tracks_status   ON tracks(status);
 CREATE INDEX IF NOT EXISTS idx_tracks_artist   ON tracks(artists);
 CREATE INDEX IF NOT EXISTS idx_tracks_sha      ON tracks(audio_sha256);
 CREATE INDEX IF NOT EXISTS idx_tracks_sourceid ON tracks(source_video_id);
+CREATE INDEX IF NOT EXISTS idx_tracks_visual   ON tracks(visual_video_id);
 
 -- 分离结果：一行 = 一种模型对某曲目的分离产物
 CREATE TABLE IF NOT EXISTS stems (

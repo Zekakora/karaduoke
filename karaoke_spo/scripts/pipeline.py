@@ -13,6 +13,16 @@
 - 不猜：匹配分低于阈值就失败，不下载错误的音频；
 - 一首歌内 `download` 和 `lyrics` 默认并行（互不依赖）；`separate` / `finalize`
   这类重资源步骤用 scripts/gpu_lock.py 的跨进程文件锁串行，允许后台同时跑多首歌。
+
+临时文件的生命周期（见 `step_cleanup`）：
+  1. `download` 把音频来源下载/转成 `data/library/<videoId>.wav`（Demucs 的输入）；
+  2. `separate` 读它，产出 4 轨 WAV 到 `assets/output/library/<spotifyId>/`；
+  3. `finalize` 把 4 轨编成终端用户要的 4 个 MP3，并清掉中间轨；
+  4. `cleanup`（**默认在最后自动跑**）确认 4 个 MP3 都合格后，才删掉
+     `data/library/<videoId>.wav` 这个音频处理输入，以及下载阶段的中间文件。
+     确认不了（MP3 缺失 / 太小 / 读不出来）就**什么都不删**，把情况记进 jobs。
+  `--keep-audio` 可以关掉这一步（排查问题时用）。任何清理失败都只记日志，
+  不影响已经生成、正在被 KaraokeMixer 播放的 MP3。
 """
 from __future__ import annotations
 
@@ -36,6 +46,9 @@ import fetch_lyrics  # noqa: E402
 import gpu_lock  # noqa: E402
 
 STEMS_DIR = ROOT / "assets" / "output" / "library"
+# 音频处理输入（下载/转码得到的 44.1k WAV）与下载匹配记录都放在这里。
+# fetch_audio 的默认输出目录也是它（脚本里叫 UPSTREAM），保持同一份定义语义。
+AUDIO_IN_DIR = ROOT / "data" / "library"
 
 
 def sha256_file(path: Path) -> str:
@@ -80,9 +93,7 @@ def step_resolve(conn, track_id: int, args) -> dict:
     ]
     for a in args.artist[1:]:
         argv += ["--artist", a]
-    # 视频保留：只透传给 fetch_audio，本函数不碰任何匹配/算法逻辑
-    if getattr(args, "keep_video", False):
-        argv += ["--keep-video"]
+    # 只下载音频：官方 MV 由 Node 侧的 lib/official-mv.js 单独匹配，不在这里下载
     rc = _run_fetch(argv)
     ms = int((time.perf_counter() - t0) * 1000)
     if rc != 0:
@@ -296,6 +307,212 @@ def step_finalize(conn, track_id: int, args) -> dict:
     return {"ok": True, "files": [f"{n}.mp3" for n in ("accompaniment", "vocals", "guide", "original")]}
 
 
+# ---------------------------------------------------------------- 临时文件清理（成功收尾）
+#
+# 涉及的资源有三类，**不要混淆**：
+#   1. 音频处理输入 `data/library/<videoId>.wav`：download 产出、separate 消费。
+#      成片成功之后就不再需要，可以删（本文件的 step_cleanup）。
+#   2. 最终交付的 4 个 MP3（assets/output/library/<spotifyId>/）：**永久保留**，
+#      KaraokeMixer 播放的就是它们。任何清理逻辑都不许碰。
+#   3. 官方 MV：根本不下载，来自 YouTube IFrame（lib/official-mv.js）。
+FINAL_MP3_NAMES = ("accompaniment.mp3", "vocals.mp3", "guide.mp3", "original.mp3")
+# 一个 320kbps 的 MP3 每秒约 40KB；1 秒的歌也有 ~40KB。小于 16KB 的几乎必然是空文件/失败产物。
+MIN_MP3_BYTES = 16 * 1024
+
+
+def verify_final_mp3s(out_dir: Path) -> dict:
+    """检查 4 个最终 MP3 是否都在、非空、真能读。
+
+    只做**基础**检查（存在 / 大小 / 文件头），不重新解码整首歌 —— 解码 4 个 320k MP3
+    要几秒，而这里只是确认"文件是好的才删输入"，不是质检。
+    MP3 帧头：ID3v2（"ID3"）或 MPEG 帧同步（0xFF 且第二个字节高 3 位全 1）。
+
+    返回 {"ok": bool, "files": {name: bytes}, "problems": [str]}
+    """
+    files: dict[str, int] = {}
+    problems: list[str] = []
+    for name in FINAL_MP3_NAMES:
+        path = out_dir / name
+        if not path.is_file():
+            problems.append(f"{name} 不存在")
+            continue
+        size = path.stat().st_size
+        files[name] = size
+        if size < MIN_MP3_BYTES:
+            problems.append(f"{name} 太小（{size}B）")
+            continue
+        try:
+            with path.open("rb") as fh:
+                head = fh.read(4)
+        except OSError as e:
+            problems.append(f"{name} 读不出来：{e}")
+            continue
+        looks_mp3 = head[:3] == b"ID3" or (len(head) >= 2 and head[0] == 0xFF and (head[1] & 0xE0) == 0xE0)
+        if not looks_mp3:
+            problems.append(f"{name} 不是 MP3 文件头")
+    return {"ok": not problems and len(files) == len(FINAL_MP3_NAMES), "files": files, "problems": problems}
+
+
+def collect_temp_files(conn, track_id: int, args) -> list[Path]:
+    """列出"这一首歌处理过程中会产生、成功后就不再需要的临时文件"。
+
+    严格限定在这些**明确属于当前曲目**的位置上，绝不按通配符扫整个目录：
+      * data/library/<sourceVideoId>.wav        —— 音频处理输入（separate 读它）
+      * data/library/<sourceVideoId>.match.json —— 下载匹配记录（已写进 DB）
+      * data/library/__pipeline_<spotifyId>.match.json —— 下载失败时留下的记录
+      —— 注意：**只删自己这一首的 videoId**。两首歌可能共用同一个 audio_path
+         （同一段音频被不同曲目引用），所以删之前还要确认没有别的曲目在用它。
+      * .tmp/spotdl-out/<spotifyId>.wav 等下载中间产物的**目录**，仅当它为空时删目录本身。
+      * assets/output/library/<spotifyId>/video.mp4 —— 旧版本管线留下的本地背景视频；
+        视频模式已经改成官方 MV，本地背景 MP4 不再需要（有 4 个 MP3 就能删）。
+    """
+    upstream = AUDIO_IN_DIR
+    stems_dir = STEMS_DIR / args.spotify_id
+    out: list[Path] = []
+
+    def safe(resolved: Path, root: Path) -> bool:
+        try:
+            resolved.relative_to(root.resolve())
+            return True
+        except (ValueError, OSError):
+            return False
+
+    # 1) 本曲目的音频输入。以曲目实际记录 + match.json 里选中的 videoId 为准。
+    row = library.get_track(conn, args.spotify_id) or {}
+    video_ids: list[str] = []
+    if row.get("source_video_id"):
+        video_ids.append(str(row["source_video_id"]))
+    audio_path = row.get("audio_path")
+    if audio_path:
+        p = Path(audio_path)
+        if p.parent.resolve() == upstream.resolve():
+            video_ids.append(p.stem)
+
+    candidates = [upstream / f"{vid}.wav" for vid in dict.fromkeys(video_ids) if vid]
+    candidates.append(upstream / f"__pipeline_{args.spotify_id}.match.json")
+
+    # 2) 别的曲目是否还在用同一个文件（同一音频被两首歌引用时绝不能删）
+    used_by_others: set[Path] = set()
+    for other in library.list_tracks(conn, limit=1000):
+        if other.get("spotify_id") == args.spotify_id:
+            continue
+        other_path = other.get("audio_path")
+        if other_path:
+            used_by_others.add(Path(other_path).resolve())
+
+    for cand in candidates:
+        resolved = cand.resolve()
+        if not safe(resolved, upstream):
+            continue
+        if resolved in used_by_others:
+            print(f"[i] 跳过 {cand.name}：还有别的曲目在用它")
+            continue
+        out.append(cand)
+
+    # 3) 旧版本留下的本地背景视频（只在 MP3 确认合格之后才会走到这里）
+    legacy_video = stems_dir / "video.mp4"
+    if safe(legacy_video.resolve(), STEMS_DIR) and legacy_video.exists():
+        out.append(legacy_video)
+
+    return out
+
+
+def step_cleanup(conn, track_id: int, args) -> dict:
+    """成功收尾：确认最终产物合格 → 删除音频处理输入与下载中间文件。
+
+    安全规则（每一条都独立生效，任何一条不满足就不删）：
+      A. **先校验，后删除**：4 个最终 MP3 必须都在、非空、文件头正确；
+         校验不过就什么都不删 —— 这时唯一的音频输入可能就是重试/恢复的唯一依据。
+      B. **只在成功路径调用**：main() 只在 separate/finalize 都成功后才跑这一步。
+      C. **只删本曲目的文件**：路径必须落在 data/library/ 或本曲目的输出目录内，
+         而且不能是别的曲目也在用的 audio_path。
+      D. **异常安全**：每个文件独立 try，失败只记日志，绝不让清理异常影响已生成的 MP3。
+    """
+    import datetime
+
+    stems_dir = STEMS_DIR / args.spotify_id
+    check = verify_final_mp3s(stems_dir)
+    if not check["ok"]:
+        msg = "最终 MP3 校验未通过，保留所有临时文件：" + "；".join(check["problems"])
+        print(f"[!] {msg}")
+        library.log_job(conn, track_id, "cleanup", "skipped", msg, None)
+        return {"ok": False, "skipped": True, "reason": msg, "problems": check["problems"]}
+
+    targets = collect_temp_files(conn, track_id, args)
+    removed: list[dict] = []
+    failed: list[dict] = []
+    freed = 0
+    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    manifest = ROOT / "data" / f"cleanup-{args.spotify_id}-{stamp}.json"
+    for path in targets:
+        # 双保险：只允许删文件（不递归删目录），且必须还在受管目录里
+        try:
+            if not path.is_file():
+                continue
+            resolved = path.resolve()
+            allowed_roots = [AUDIO_IN_DIR, stems_dir]
+            if not any(_is_within(resolved, root) for root in allowed_roots):
+                failed.append({"path": str(path), "error": "路径不在受管目录内"})
+                continue
+            size = path.stat().st_size
+            path.unlink()
+            removed.append({"path": str(path), "name": path.name, "bytes": size})
+            freed += size
+            print(f"[=] 已删除临时文件 {path.name}（{size / 1024 / 1024:.1f} MB）")
+        except OSError as e:
+            # 文件被别的进程占着（例如 Windows 上还有句柄）就跳过，留到下次
+            failed.append({"path": str(path), "error": str(e)})
+            print(f"[!] 删除临时文件失败（忽略，不影响播放）：{path.name}：{e}")
+
+    # 下载工具留下的空输出目录（只删空目录，里面还有东西就留着）
+    spotdl_out = ROOT / ".tmp" / "spotdl-out"
+    if spotdl_out.is_dir():
+        try:
+            leftovers = list(spotdl_out.iterdir())
+            if not leftovers:
+                spotdl_out.rmdir()
+        except OSError:
+            pass
+
+    if removed:
+        # 清单落盘：删是真删（不进回收站），至少能查到删过什么
+        try:
+            manifest.parent.mkdir(parents=True, exist_ok=True)
+            manifest.write_text(json.dumps({
+                "spotifyId": args.spotify_id,
+                "at": datetime.datetime.now().isoformat(timespec="seconds"),
+                "reason": "4 个最终 MP3 已确认合格，清理音频处理输入与中间文件",
+                "keptMp3": check["files"],
+                "removed": removed,
+                "failed": failed,
+                "freedBytes": freed,
+            }, ensure_ascii=False, indent=2), encoding="utf-8")
+        except OSError as e:
+            print(f"[!] 清理清单写入失败（忽略）：{e}")
+
+    summary = f"删除 {len(removed)} 个临时文件，释放 {freed / 1024 / 1024:.1f} MB"
+    if failed:
+        summary += f"；{len(failed)} 个失败（见日志）"
+    print(f"[+] 清理完成：{summary}")
+    library.log_job(conn, track_id, "cleanup", "ok" if not failed else "partial", summary, None)
+    return {
+        "ok": True,
+        "removed": removed,
+        "failed": failed,
+        "freedBytes": freed,
+        "keptMp3": check["files"],
+        "manifest": str(manifest) if removed else None,
+    }
+
+
+def _is_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root.resolve())
+        return True
+    except (ValueError, OSError):
+        return False
+
+
 def run_download_lyrics(conn, track_id: int, args, steps: list[str]) -> dict:
     """同一首歌内跑下载 + 歌词：两者都要跑时**并行**，只跑一个时串行。
 
@@ -362,12 +579,13 @@ def main() -> int:
     ap.add_argument("--force-metadata", action="store_true", help="已完整也重新拉 Spotify 元数据")
     ap.add_argument("--force-separate", action="store_true",
                     help="已有分离结果也重跑（混音算法变更后需要重建 4 轨）")
-    ap.add_argument("--steps", default="metadata,download,lyrics,separate,finalize")
+    ap.add_argument("--steps", default="metadata,download,lyrics,separate,finalize,cleanup",
+                    help="要跑的步骤。cleanup（成功收尾清理）默认包含，详见 step_cleanup")
     ap.add_argument("--provider", choices=("auto", "spotdl", "ytdlp"), default="auto",
                     help="下载路径：auto=先 spotdl 失败回落 ytdlp（默认）；spotdl；ytdlp")
-    ap.add_argument("--keep-video", action="store_true",
-                    help="下载时额外保留 720p MP4（无音轨）到 "
-                         "assets/output/library/<spotifyId>/video.mp4")
+    ap.add_argument("--keep-audio", action="store_true",
+                    help="成片成功后**保留**音频处理的输入（data/library/<videoId>.wav），"
+                         "默认会删掉它和下载中间文件；排查问题或需要重跑 separate 时用")
     ap.add_argument("--no-parallel-steps", action="store_true",
                     help="下载和歌词串行跑（默认并行；排查问题时用）")
     args = ap.parse_args()
@@ -413,6 +631,28 @@ def main() -> int:
         result["separate"] = step_separate(conn, track_id, args)
     if "finalize" in steps:
         result["finalize"] = step_finalize(conn, track_id, args)
+
+    # ---- 成功收尾：清理音频处理输入（临时文件）----
+    # 只在"这次真的跑到了 finalize 而且成功"时才清：
+    #   * 只跑 --steps download 的调试流程不能清（音频输入是下一步的输入）；
+    #   * 任何一步失败都不能清（失败时那个 .wav 往往是唯一能重试的输入）；
+    #   * step_cleanup 自己还会再校验一遍 4 个 MP3 是否合格。
+    if "cleanup" in steps:
+        finalize_ok = bool(result.get("finalize", {}).get("ok"))
+        if not finalize_ok:
+            print("[i] 没有成功完成 finalize，跳过临时文件清理（保留音频输入以便重试）")
+            result["cleanup"] = {"skipped": True, "reason": "finalize 未成功"}
+        elif args.keep_audio:
+            print("[i] --keep-audio：保留音频处理输入，不清理")
+            result["cleanup"] = {"skipped": True, "reason": "--keep-audio"}
+        else:
+            try:
+                result["cleanup"] = step_cleanup(conn, track_id, args)
+            except Exception as e:  # noqa: BLE001
+                # 清理是收尾动作：它自己炸了不能影响已经生成、正在播放的 MP3
+                print(f"[!] 临时文件清理异常（忽略，MP3 不受影响）：{e}")
+                library.log_job(conn, track_id, "cleanup", "failed", str(e)[:500], None)
+                result["cleanup"] = {"ok": False, "error": str(e)}
 
     print("\n=== 结果 ===")
     print(json.dumps(result, ensure_ascii=False, indent=2))

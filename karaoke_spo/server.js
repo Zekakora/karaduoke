@@ -11,9 +11,18 @@ const lyricsOverrides = require('./lib/lyrics-overrides.js');
 const { parseQrcXml } = require('./lib/qrc-parse.js');
 const netease = require('./lib/netease-lyrics.js');
 const spotify = require('./lib/spotify.js');
+// 官方 MV Resolver（visualVideoId）：只调 YouTube Data API，不下载视频。
+// 与音频侧（fetch_audio 的 sourceVideoId + MP4）完全独立，见 docs/official-mv.md。
+const officialMv = require('./lib/official-mv.js');
+const youtube = require('./lib/youtube.js');
+// 免配额的官方 MV 源（ytmusicapi）。它不可用时，official-mv.js 会自动退回官方 Data API。
+const ytmusic = require('./lib/ytmusic.js');
 const { PrepareQueue } = require('./lib/prepare-queue.js');
+const { MatchWorker } = require('./lib/match-worker.js');
 const queueOrder = require('./lib/queue-order.js');
 const { MODE, MODE_LABEL } = require('./lib/mode.js');
+// 环境目录 / YouTube API Key 的统一读取（与模式 A 共用 config\config.json 那份配置）
+const envConfig = require('./lib/env.js');
 
 const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || '0.0.0.0';
@@ -91,8 +100,9 @@ function defaultState() {
       publicUrl: PUBLIC_URL,
       interfaceLanguage: 'en',
       interfaceTheme: 'system',
-      // 'video' = 原样嵌入 YouTube；'lyrics' = 用歌词视图替换 YouTube 画面（音频仍由 YouTube 提供）
-      playbackMode: 'lyrics',
+      // 'video' = YouTube 官方 MV（静音）+ 两行歌词；'lyrics' = 仿 Apple Music 歌词页
+      // 模式 B 的主画面是视频；DJ 切过之后会持久化在 state.json 里，重启不再被覆盖。
+      playbackMode: 'video',
       // 歌词显示方式：true=逐字（有 QRC 数据时），false=逐行
       lyricsWordLevel: true,
       // 视频模式下是否叠歌词
@@ -177,9 +187,13 @@ if (typeof state.settings.showTranslation !== 'boolean') state.settings.showTran
 state.settings.publicUrl ??= PUBLIC_URL;
 state.settings.interfaceLanguage ??= 'zh';
 state.settings.interfaceTheme ??= 'system';
-// 旧 state.json 没有这个字段，必须补默认值，否则播放模式读出来是 undefined。
-// 本地曲目没有视频，画面固定歌词
-state.settings.playbackMode = 'lyrics';
+// 播放画面（video = YouTube 官方 MV + 两行歌词；lyrics = 仿 Apple Music）。
+// **只在字段缺失/非法时补默认值**，不能每次启动都覆盖成 lyrics ——
+// 之前这行是硬赋值，DJ 切到视频模式后一重启就被打回 Apple Music（用户反馈的问题）。
+// 现在的默认是 video（这才是模式 B 的主画面）。
+if (state.settings.playbackMode !== 'video' && state.settings.playbackMode !== 'lyrics') {
+  state.settings.playbackMode = 'video';
+}
 // 音源：'youtube' = 模式 A（YouTube 搜索 + iframe 播放）
 //       'local'   = 模式 B（Spotify 搜索 + 本地 Demucs 音源）
 // 模式 B 固定走本地曲库，不提供切换（模式 A 在另一个独立工程里）
@@ -207,9 +221,27 @@ let tunnelUrl = '';
 // 启动器保存设置后可以热更新 API Key，不必重启服务。
 let runtimeYoutubeApiKey = '';
 
+/**
+ * YouTube API Key ——**与模式 A 完全同一份配置**：
+ *   1. 启动器热更新推来的值（控制面板「设置」保存后立即生效）；
+ *   2. 启动器注入的 YOUTUBE_API_KEY 环境变量；
+ *   3. 项目根 config\config.json 的 youtubeApiKey（直接启动工程时用，见 lib/env.js）。
+ * 模式 B 不再有自己的一套 Key 读取逻辑。
+ */
 function youtubeApiKey() {
-  return runtimeYoutubeApiKey || String(process.env.YOUTUBE_API_KEY || '').trim();
+  return runtimeYoutubeApiKey || envConfig.youtubeApiKey();
 }
+
+/**
+ * 把当前 Key 同步给 lib/youtube.js（它只读 process.env，不自己存密钥）。
+ * 控制面板保存设置后会调 /internal/public-url 热更新 Key，那里再调一次。
+ */
+function applyYoutubeApiKey() {
+  const key = youtubeApiKey();
+  if (key) process.env.YOUTUBE_API_KEY = key;
+  return key;
+}
+applyYoutubeApiKey();
 
 function currentPublicUrl() {
   return tunnelUrl || state.settings.publicUrl || '';
@@ -380,6 +412,28 @@ function publicState() {
   };
 }
 
+/**
+ * 队列项要用的官方 MV videoId：**以曲库为准**。
+ *
+ * 队列项自己不带这个字段（它是播放态数据，不是曲库数据），
+ * 所以每次序列化时查一次曲库，并顺手把结果缓存在队列项上，
+ * 免得每 250ms 的 SSE 都去查库。
+ */
+function resolveQueueVisualId(song) {
+  if (!song || song.source !== 'local' || !song.spotifyId) return null;
+  const cached = song.visualVideoId;
+  if (cached !== undefined) return cached || null;   // 已缓存（包括 null 表示确实没有）
+  let next = null;
+  try {
+    const visual = libraryDb.getVisual(song.spotifyId);
+    if (visual && visual.visualVideoId && ['auto_matched', 'manually_confirmed'].includes(visual.visualMatchStatus)) {
+      next = visual.visualVideoId;
+    }
+  } catch { /* 曲库不可用就当没有 MV */ }
+  song.visualVideoId = next;
+  return next;
+}
+
 function publicSong(song) {
   const out = {
     id: song.id,
@@ -396,7 +450,16 @@ function publicSong(song) {
     // display 页靠这两个字段区分播放引擎：local → KaraokeMixer（本地双轨），youtube → YT.Player。
     // 缺了它们前端只能看到 videoId 为 null，无法判断该用哪种播放器。
     source: song.source === 'local' ? 'local' : 'youtube',
-    spotifyId: song.spotifyId || null
+    spotifyId: song.spotifyId || null,
+    // 官方 MV（背景画面）。本地曲目在这里就带上，大屏挂载 Video Mode 时不用再等详情请求；
+    // 没有 / 还没匹配 / 不可用 → null，前端直接回退模糊封面。
+    // 注意：song.videoId 是**音频**源（YouTube 模式用），和 visualVideoId 不是一回事。
+    //
+    // **必须回落到曲库**：队列项上的 visualVideoId 只在"制作完成 / MV 匹配完成"时才会被
+    // cell 写入，而老歌（早就 ready、匹配是后来补的）在队列项上永远是 null ——
+    // 大屏拿到 null 就以为"没有 MV"，一直卡在「正在加载官方 MV…」。
+    // 这里以曲库为准（一次索引查询，很便宜），并把结果写回队列项缓存。
+    visualVideoId: song.source === 'local' ? resolveQueueVisualId(song) : null
   };
   // 制作状态：用户侧只看粗粒度（准备中/已就绪/准备失败），
   // 百分比与阶段只给 DJ 控制台用（adminState 里带完整 progress）。
@@ -472,14 +535,192 @@ function schedulePrepareSync() {
 function syncPrepareState() {
   try {
     applyPrepareJobsToQueue();
+    refreshQueueVisualIds();
     // 制作完成 → 队列项从 preparing 变成 queued。
     // 这时如果播放器正好空着（上一首唱完、下一首还在处理），要主动开播，
     // 否则那首歌会一直躺在队列里没人放，大屏停在待机画面。
     if (!currentSong() && pendingSongs().length) startNext();
+    maybeStartMvResolve();
     persist();
     broadcast();
   } catch (err) {
     console.error(`[prepare] 同步队列状态失败：${err.message}`);
+  }
+}
+
+// ---------------------------------------------------------------- 官方 MV 并行阶段
+// 每首歌处理完（或开始了）就顺手搜一次官方 MV。它和 pipeline.py **并行**：
+//   * 只调 YouTube Data API，不占 GPU/CPU，不会拖延音频；
+//   * 失败（没 Key / 配额 / 网络）只记录，job 仍然 ready，大屏回退模糊封面。
+// 已确认手动结果的歌不会重搜（Resolver 里判断），所以重启后不会重复打 API。
+const mvResolving = new Set();
+
+function queueSongsNeedingMv() {
+  const out = [];
+  for (const song of state.songs) {
+    if (song.source !== 'local' || !song.spotifyId) continue;
+    if (!['preparing', 'queued', 'playing', 'transition'].includes(song.status)) continue;
+    const visual = libraryDb.getVisual(song.spotifyId);
+    if (!visual) { out.push(song.spotifyId); continue; }
+    if (visual.visualVideoId && ['auto_matched', 'manually_confirmed'].includes(visual.visualMatchStatus)) continue;
+    // 已经搜过且有结论（含 not_found / 未达阈值）→ 不自动重搜；管理员点「重新搜索」才会再来
+    if (visual.visualMatchedAt && ['not_found', 'pending', 'unavailable'].includes(visual.visualMatchStatus)) continue;
+    out.push(song.spotifyId);
+  }
+  return [...new Set(out)];
+}
+
+/** 启动一轮 MV 解析（不阻塞调用方；同一首歌同时只跑一次） */
+function maybeStartMvResolve() {
+  // 官方 API 没 Key **且** YouTube Music 源也不可用时才放弃 ——
+  // 只要还有一个源能用，就还能匹配到官方 MV（ytmusicapi 不需要任何 Key / 配额）。
+  if (!youtube.hasKey() && !ytmusic.enabled()) return;
+  const targets = queueSongsNeedingMv().filter((id) => !mvResolving.has(id));
+  for (const spotifyId of targets) {
+    resolveMvFor(spotifyId).catch((error) => {
+      console.error(`[mv] ${spotifyId} 官方 MV 匹配异常：${error.message}`);
+    });
+  }
+}
+
+async function resolveMvFor(spotifyId, { force = false } = {}) {
+  if (mvResolving.has(spotifyId)) return null;
+  mvResolving.add(spotifyId);
+  try {
+    prepareQueue.markMvRunning(spotifyId);
+    await new Promise((r) => setImmediate(r)); // 让 markMvRunning 的广播先出去
+    const result = await officialMv.resolve({ spotifyId, force });
+    prepareQueue.setMvResult(spotifyId, {
+      status: result.status,
+      visualVideoId: result.visual?.visualVideoId || null,
+      reason: result.reason || null,
+      skipped: !result.searched,
+    });
+    if (result.searched) {
+      console.log(`[mv] ${spotifyId} → ${result.status}${result.visual?.visualVideoId ? ` (${result.visual.visualVideoId})` : ''}`);
+      // 队列项上同步一份，切歌时立刻能用
+      const song = state.songs.find((s) => s.spotifyId === spotifyId && s.source === 'local');
+      if (song) song.visualVideoId = result.visual?.visualVideoId || null;
+      broadcast();
+    }
+    return result;
+  } catch (error) {
+    prepareQueue.setMvResult(spotifyId, { error: error.message });
+    console.warn(`[mv] ${spotifyId} 匹配失败（不影响音频）：${error.message}`);
+    return null;
+  } finally {
+    mvResolving.delete(spotifyId);
+  }
+}
+
+// ---------------------------------------------------------------- 批量补齐（一键匹配 MV / 歌词）
+// 低并发、串行、带间隔：YouTube 的 search.list 连发会 429，所以共用同一个队列慢慢跑。
+const matcher = new MatchWorker({
+  options: {
+    gapMs: Number(process.env.KARAOKE_MATCH_GAP_MS || 1500),
+  },
+  onChange: () => {
+    // 进度变化 → 走现有 SSE，曲库页能看到「正在处理 x/y」
+    try { broadcast(); } catch { /* ignore */ }
+  },
+  // 单首：MV
+  runMv: async (item) => {
+    const result = await officialMv.resolve({ spotifyId: item.spotifyId, force: false });
+    // 被限流（429 / 冷却期）：这首没真正搜过，交给队列记成"跳过，稍后再来"
+    if (result.rateLimited) return { rateLimited: true, reason: result.reason };
+    if (!result.searched && /YOUTUBE_RATE_LIMITED|限流/.test(String(result.reason || ''))) {
+      return { rateLimited: true, reason: result.reason };
+    }
+    // 队列项上同步一份，切歌时立刻能用
+    if (result.searched && result.visual?.visualVideoId) {
+      invalidateQueueVisualIds(item.spotifyId);
+      const song = state.songs.find((s) => s.spotifyId === item.spotifyId && s.source === 'local');
+      if (song) song.visualVideoId = result.visual.visualVideoId;
+    }
+    return {
+      status: result.status,
+      visualVideoId: result.visual?.visualVideoId || null,
+      score: result.visual?.visualMatchScore ?? null,
+      searched: Boolean(result.searched),
+    };
+  },
+  // 单首：歌词（曲库里已有的直接用；没有就按现有源顺序抓一份）
+  runLyrics: async (item) => {
+    const stored = libraryDb.getLyrics(item.spotifyId);
+    if (stored && stored.content) return { status: 'already-present', provider: stored.provider || null };
+    const track = libraryDb.getTrack(item.spotifyId);
+    if (!track) return { status: 'no-track' };
+    const duration = track.durationMs ? Math.round(track.durationMs / 1000) : 0;
+    const payload = await lookupLyrics({
+      videoId: `local:${item.spotifyId}`,
+      rawTitle: '',
+      duration,
+      wantWordLevel: true,
+      artist: (track.artists || []).join(', '),
+      songTitle: track.title || '',
+    });
+    if (!payload || !payload.found || !(payload.lines || []).length) return { status: 'not-found' };
+    lyricsOverrides.set(`local:${item.spotifyId}`, payload, {
+      songTitle: track.title || '',
+      artist: (track.artists || []).join(', '),
+    });
+    for (const key of [...lyricsCache.keys()]) {
+      if (key.startsWith(`local:${item.spotifyId}|`)) lyricsCache.delete(key);
+    }
+    return {
+      status: 'matched',
+      provider: payload.provider || null,
+      wordLevel: Boolean(payload.wordLevel),
+      lines: (payload.lines || []).length,
+    };
+  },
+});
+
+/** 曲库里"还没匹配"的歌（供一键匹配按钮统计与提交） */
+function collectMatchCandidates({ kinds = ['mv', 'lyrics'] } = {}) {
+  const wantMv = kinds.includes('mv');
+  const wantLyrics = kinds.includes('lyrics');
+  const out = [];
+  for (const track of libraryDb.listTracks({ limit: 1000, includeUnready: true }).tracks || []) {
+    const need = [];
+    if (wantMv) {
+      const visual = libraryDb.getVisual(track.spotifyId);
+      const hasMv = visual && visual.visualVideoId
+        && ['auto_matched', 'manually_confirmed'].includes(visual.visualMatchStatus);
+      // not_found 的不再反复搜（除非管理员手动重搜）
+      if (!hasMv && visual?.visualMatchStatus !== 'not_found') need.push('mv');
+    }
+    if (wantLyrics) {
+      const stored = libraryDb.getLyrics(track.spotifyId);
+      const hasOverride = Boolean(lyricsOverrides.get(`local:${track.spotifyId}`)?.payload);
+      if (!hasOverride && !(stored && stored.content)) need.push('lyrics');
+    }
+    if (need.length) out.push({ spotifyId: track.spotifyId, title: track.title, kinds: need });
+  }
+  return out;
+}
+
+/**
+ * 丢掉队列项上缓存的 visualVideoId（管理员改/清 MV、一键匹配补到 MV 之后调用），
+ * 下一次 publicSong() 会重新查曲库。
+ */
+function invalidateQueueVisualIds(spotifyId) {
+  for (const song of state.songs) {
+    if (song.source !== 'local') continue;
+    if (spotifyId && song.spotifyId !== spotifyId) continue;
+    delete song.visualVideoId;
+  }
+}
+
+/** 队列项里的 visualVideoId 以曲库为准刷新（管理员改完 MV，不用等下次点歌就生效） */
+function refreshQueueVisualIds() {
+  for (const song of state.songs) {
+    if (song.source !== 'local' || !song.spotifyId) continue;
+    if (!['preparing', 'queued', 'playing', 'transition'].includes(song.status)) continue;
+    if (!libraryDb.getVisualRow(song.spotifyId)) continue;
+    const visual = libraryDb.getVisual(song.spotifyId);
+    const next = visual && ['auto_matched', 'manually_confirmed'].includes(visual.visualMatchStatus) ? visual.visualVideoId : null;
+    if (song.visualVideoId !== next) song.visualVideoId = next;
   }
 }
 
@@ -503,6 +744,8 @@ function applyPrepareJobsToQueue() {
       ? { stage: job.progress.stage, percent: job.progress.percent, stageLabel: job.stageLabel || null }
       : null;
     song.prepareStage = job.stage || null;
+    // 官方 MV（visualVideoId）是并行阶段：把结果带到队列项上，大屏切歌时立刻可用
+    song.visualVideoId = job.mv?.visualVideoId || song.visualVideoId || null;
     if (job.status === 'ready') {
       // 制作完成 → 变成普通等待队列项，可以播放
       if (song.status !== 'queued') {
@@ -651,28 +894,23 @@ async function readBody(req) {
   catch { throw new Error('请求格式不是有效 JSON'); }
 }
 
+/**
+ * 搜索框（模式 A 行为）：网络访问统一走 lib/youtube.js（配额/缓存/错误处理只有一份）。
+ * 没有 API Key 时退回内置演示目录（保持原有体验，不让搜索框报错）。
+ */
 async function youtubeSearch(query) {
   const q = String(query || '').trim();
   const directVideoId = extractYouTubeVideoId(q);
   if (directVideoId) return [await youtubeVideoItem(directVideoId)];
   if (!q) return demoCatalog.slice(0, 6);
   if (youtubeApiKey()) {
-    const url = new URL('https://www.googleapis.com/youtube/v3/search');
-    url.searchParams.set('part', 'snippet');
-    url.searchParams.set('type', 'video');
-    url.searchParams.set('maxResults', '12');
-    url.searchParams.set('q', q);
-    url.searchParams.set('videoEmbeddable', 'true');
-    url.searchParams.set('key', youtubeApiKey());
-    const response = await fetch(url);
-    if (!response.ok) throw new Error(`YouTube 搜索失败（${response.status}）`);
-    const data = await response.json();
-    return (data.items || []).map(item => ({
-      videoId: item.id.videoId,
-      title: item.snippet.title,
-      channelTitle: item.snippet.channelTitle,
+    const items = await youtube.search({ q, maxResults: 12, videoEmbeddable: true });
+    return items.map(item => ({
+      videoId: item.videoId,
+      title: item.title,
+      channelTitle: item.channelTitle,
       duration: '—',
-      thumbnailUrl: item.snippet.thumbnails?.medium?.url || item.snippet.thumbnails?.default?.url || '',
+      thumbnailUrl: item.thumbnailUrl || '',
       embeddable: true
     }));
   }
@@ -699,28 +937,22 @@ function extractYouTubeVideoId(input) {
   return null;
 }
 
-function formatIsoDuration(value) {
-  const match = String(value || '').match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
-  if (!match) return '—';
-  const hours = Number(match[1] || 0), minutes = Number(match[2] || 0), seconds = Number(match[3] || 0);
-  return hours ? `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}` : `${minutes}:${String(seconds).padStart(2, '0')}`;
+function formatIsoDuration(seconds) {
+  if (!Number.isFinite(Number(seconds)) || seconds === null) return '—';
+  const total = Math.max(0, Math.round(Number(seconds)));
+  const hours = Math.floor(total / 3600), minutes = Math.floor((total % 3600) / 60), secs = total % 60;
+  return hours ? `${hours}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}` : `${minutes}:${String(secs).padStart(2, '0')}`;
 }
 
 async function youtubeVideoItem(videoId) {
   const known = demoCatalog.find(item => item.videoId === videoId);
   if (youtubeApiKey()) {
-    const url = new URL('https://www.googleapis.com/youtube/v3/videos');
-    url.searchParams.set('part', 'snippet,contentDetails,status');
-    url.searchParams.set('id', videoId);
-    url.searchParams.set('key', youtubeApiKey());
-    const response = await fetch(url);
-    if (!response.ok) throw new Error(`YouTube 视频信息获取失败（${response.status}）`);
-    const data = await response.json();
-    const item = data.items?.[0];
+    const details = await youtube.videos([videoId]);
+    const item = details.get(videoId);
     if (item) {
       // 嵌入被禁用（或在当前地区不可播放）的视频在 iframe 里只会显示 Song Unavailable。
-      const embeddable = item.status?.embeddable !== false && item.status?.privacyStatus !== 'private';
-      return { videoId, title: item.snippet.title, channelTitle: item.snippet.channelTitle, duration: formatIsoDuration(item.contentDetails?.duration), thumbnailUrl: item.snippet.thumbnails?.medium?.url || item.snippet.thumbnails?.default?.url || `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`, embeddable };
+      const embeddable = item.embeddable !== false && item.privacyStatus !== 'private';
+      return { videoId, title: item.title, channelTitle: item.channelTitle, duration: formatIsoDuration(item.durationSeconds), thumbnailUrl: item.thumbnailUrl || `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`, embeddable };
     }
   }
   return known || { videoId, title: `YouTube 视频 ${videoId}`, channelTitle: 'YouTube 链接', duration: '—', thumbnailUrl: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`, embeddable: true };
@@ -1099,7 +1331,11 @@ async function handleApi(req, res, url) {
       const nextFixedUrl = normalizePublicUrl(body.fixedUrl);
       const changed = nextTunnelUrl !== tunnelUrl || nextFixedUrl !== state.settings.publicUrl;
       tunnelUrl = nextTunnelUrl;
-      if (body.youtubeApiKey !== undefined) runtimeYoutubeApiKey = String(body.youtubeApiKey || '').trim();
+      if (body.youtubeApiKey !== undefined) {
+        runtimeYoutubeApiKey = String(body.youtubeApiKey || '').trim();
+        // 官方 MV Resolver 走 lib/youtube.js，它只读 process.env —— 热更新 Key 必须同步过去
+        applyYoutubeApiKey();
+      }
       // 控制面板推来的 Spotify 凭证 / 授权状态（config\config.json → 运行时）
       if (body.spotify !== undefined) spotify.applyRuntimeConfig(body.spotify);
       if (nextFixedUrl !== state.settings.publicUrl) {
@@ -1204,8 +1440,196 @@ async function handleApi(req, res, url) {
       });
       data.prepareJobs = prepareQueue.list();
       data.counts = data.tracks.reduce((acc, track) => { acc[track.status] = (acc[track.status] || 0) + 1; return acc; }, {});
+      // 一键匹配的进度 + 待补数量（曲库页按钮与进度条用）
+      data.matcher = matcher.toPublic();
+      data.matchCandidates = { mv: collectMatchCandidates({ kinds: ['mv'] }).length, lyrics: collectMatchCandidates({ kinds: ['lyrics'] }).length };
+      // 官方 MV 的状态分布 + 搜索配置（前端「MV」列筛选和弹窗说明用）
+      data.visualCounts = data.tracks.reduce((acc, track) => { acc[track.visualMatchStatus] = (acc[track.visualMatchStatus] || 0) + 1; return acc; }, {});
+      data.visualConfig = {
+        autoThreshold: officialMv.CONFIG.autoThreshold,
+        minMargin: officialMv.CONFIG.minMargin,
+        pendingThreshold: officialMv.CONFIG.pendingThreshold,
+        apiKeyConfigured: youtube.hasKey(),
+        quota: youtube.quota(),
+        // 免配额的官方 MV 源（ytmusicapi）是否可用 —— 前端据此判断"配额用完还能不能匹配"
+        ytmusic: ytmusic.status(),
+      };
     }
     return sendJson(res, 200, data);
+  }
+  // ---- 一键匹配（曲库管理页顶部按钮）：后台串行补 MV / 歌词，低并发 --------
+  // GET  → 现有进度 + 待匹配数量；POST → 启动一批；POST /cancel → 停止
+  if (pathname === '/api/library/admin/match' || pathname === '/api/library/admin/match/cancel') {
+    if (!isAdmin(req)) return sendError(res, 401, '需要 DJ 权限', 'ADMIN_REQUIRED');
+    if (method === 'GET' && pathname === '/api/library/admin/match') {
+      const kinds = String(url.searchParams.get('kinds') || 'mv,lyrics').split(',').map((s) => s.trim()).filter(Boolean);
+      return sendJson(res, 200, {
+        job: matcher.toPublic(),
+        candidates: collectMatchCandidates({ kinds }).length,
+        query: youtube.quota(),
+        ytmusicAvailable: ytmusic.enabled(),
+      });
+    }
+    if (method === 'POST' && pathname === '/api/library/admin/match/cancel') {
+      return sendJson(res, 200, { ok: true, job: matcher.cancel().job });
+    }
+    if (method === 'POST' && pathname === '/api/library/admin/match') {
+      const body = await readBody(req);
+      const kinds = (Array.isArray(body.kinds) ? body.kinds : ['mv', 'lyrics'])
+        .map(String).filter((k) => k === 'mv' || k === 'lyrics');
+      // force = 管理员在「配额已用完」的红色按钮上二次确认后的强行重试。
+      // 这时先清掉我们自己设的限流冷却，让官方 API 真的再试一次
+      // （万一 Google 那边已经恢复了，不该用昨天的判断一直挡着）。
+      const force = body.force === true || body.force === 'true';
+      let quotaReset = false;
+      if (force) quotaReset = youtube.clearCooldown().cleared;
+      // 官方 API 限流/配额用完 → 先告诉前端（按钮变红 + 二次确认），
+      // 不要起一个注定全程"跳过"的批次；管理员确认后带 force 再来。
+      const q = youtube.quota();
+      if (kinds.includes('mv') && q.rateLimited && !force) {
+        return sendJson(res, 200, {
+          ok: true, started: false, reason: q.exhausted ? 'quota-exhausted' : 'rate-limited',
+          job: matcher.toPublic(), count: 0, quota: q,
+          // 前端据此决定弹窗文案：有免配额源时，强行重试基本能成
+          ytmusicAvailable: ytmusic.enabled(),
+        });
+      }
+      const requested = Array.isArray(body.spotifyIds) && body.spotifyIds.length
+        ? body.spotifyIds.map(String)
+        : null;
+      const candidates = collectMatchCandidates({ kinds });
+      const items = requested
+        ? candidates.filter((item) => requested.includes(item.spotifyId))
+        : candidates;
+      if (!items.length) {
+        return sendJson(res, 200, { ok: true, started: false, reason: 'nothing-to-match', job: matcher.toPublic(), count: 0 });
+      }
+      const started = matcher.start(items, { startedBy: 'dj' });
+      if (!started.ok) {
+        return sendJson(res, 409, { ok: false, reason: started.reason, job: started.job, code: 'MATCH_ALREADY_RUNNING' });
+      }
+      console.log(`[match] 一键匹配开始：${items.length} 首（${kinds.join('+')}）${force ? ' [强行重试]' : ''}`);
+      return sendJson(res, 200, {
+        ok: true, started: true, count: items.length, kinds, job: started.job,
+        forced: force, quotaReset, ytmusicAvailable: ytmusic.enabled(),
+      });
+    }
+  }
+  // ---- 官方 MV 管理（曲库管理页「MV」列 + 弹窗）----
+  // 只写曲库的 visual_* 字段；永远不碰 source_video_id（音频处理用的那个 ID）。
+  const visualMatch = pathname.match(/^\/api\/library\/admin\/tracks\/([^/]+)\/mv$/);
+  if (visualMatch && method === 'GET') {
+    if (!isAdmin(req)) return sendError(res, 401, '需要 DJ 权限', 'ADMIN_REQUIRED');
+    const spotifyId = decodeURIComponent(visualMatch[1]);
+    if (!/^[A-Za-z0-9]{22}$/.test(spotifyId)) return sendError(res, 400, 'spotifyId 不合法', 'BAD_SPOTIFY_ID');
+    const track = libraryDb.getTrack(spotifyId);
+    if (!track) return sendError(res, 404, '曲库里没有这首歌', 'TRACK_NOT_FOUND');
+    const visual = libraryDb.getVisual(spotifyId) || libraryDb.visualFallback();
+    return sendJson(res, 200, {
+      spotifyId,
+      title: track.title,
+      artists: track.artists,
+      // 注意：sourceVideoId 是音频来源，不是 MV；这里只用于提醒管理员两者不同
+      sourceVideoId: track.sourceVideoId || null,
+      ...visual,
+      config: {
+        autoThreshold: officialMv.CONFIG.autoThreshold,
+        minMargin: officialMv.CONFIG.minMargin,
+        pendingThreshold: officialMv.CONFIG.pendingThreshold,
+        apiKeyConfigured: youtube.hasKey(),
+        queryTemplates: officialMv.QUERY_TEMPLATES,
+        // 被 YouTube 限流时前端要能提示"暂停搜索、X 秒后自动恢复"
+        quota: youtube.quota(),
+        ytmusic: ytmusic.status(),
+      },
+    });
+  }
+  if (visualMatch && method === 'POST') {
+    if (!isAdmin(req)) return sendError(res, 401, '需要 DJ 权限', 'ADMIN_REQUIRED');
+    const spotifyId = decodeURIComponent(visualMatch[1]);
+    if (!/^[A-Za-z0-9]{22}$/.test(spotifyId)) return sendError(res, 400, 'spotifyId 不合法', 'BAD_SPOTIFY_ID');
+    const track = libraryDb.getTrack(spotifyId);
+    if (!track) return sendError(res, 404, '曲库里没有这首歌', 'TRACK_NOT_FOUND');
+    const body = await readBody(req);
+    const action = String(body.action || 'search');
+    try {
+      if (action === 'search') {
+        // force：管理员"重新搜索" —— 已有结果也重搜（手动确认的仍不会被覆盖）
+        const result = await officialMv.resolve({ spotifyId, track, force: true });
+        invalidateQueueVisualIds(spotifyId);
+        try { refreshQueueVisualIds(); broadcast(); } catch { /* ignore */ }
+        return sendJson(res, 200, { ok: true, action, ...result.visual, candidates: result.candidates || [], reason: result.reason || null });
+      }
+      if (action === 'select') {
+        const videoId = String(body.videoId || '').trim();
+        // 从上次的候选里取元数据（管理员点选的就是它）；也允许只给 videoId 的手填
+        const cached = (libraryDb.getVisual(spotifyId)?.candidates || []).find((c) => c.videoId === videoId) || {};
+        const result = officialMv.confirm(spotifyId, {
+          videoId,
+          title: String(body.title || cached.title || '').trim() || null,
+          channelTitle: String(body.channelTitle || cached.channelTitle || '').trim() || null,
+          duration: body.duration ?? cached.duration ?? null,
+          score: body.score ?? cached.score ?? null,
+          reason: String(body.reason || '管理员从候选中选定').slice(0, 500),
+        });
+        if (!result.ok) return sendError(res, 400, result.reason === 'BAD_VIDEO_ID' ? 'videoId 不合法' : '保存失败', result.reason);
+        invalidateQueueVisualIds(spotifyId);
+        try { refreshQueueVisualIds(); broadcast(); } catch { /* ignore */ }
+        return sendJson(res, 200, { ok: true, action, ...result.visual });
+      }
+      if (action === 'custom') {
+        // 管理员手填一个 videoId（可能不在候选里）：校验它在 YouTube 上存在且可嵌入
+        const videoId = String(body.videoId || '').trim();
+        if (!/^[A-Za-z0-9_-]{11}$/.test(videoId)) return sendError(res, 400, 'videoId 不合法', 'BAD_VIDEO_ID');
+        let info = null;
+        if (youtube.hasKey()) {
+          const details = await youtube.videos([videoId]);
+          info = details.get(videoId) || null;
+          if (!info) return sendError(res, 404, 'YouTube 上找不到这个视频', 'VIDEO_NOT_FOUND');
+          if (info.embeddable === false) return sendError(res, 400, '这个视频不允许嵌入播放', 'VIDEO_NOT_EMBEDDABLE');
+        }
+        const result = officialMv.confirm(spotifyId, {
+          videoId,
+          title: info?.title || null,
+          channelTitle: info?.channelTitle || null,
+          duration: info?.durationSeconds ?? null,
+          reason: '管理员手动填写 videoId',
+        });
+        if (!result.ok) return sendError(res, 400, '保存失败', result.reason);
+        invalidateQueueVisualIds(spotifyId);
+        try { refreshQueueVisualIds(); broadcast(); } catch { /* ignore */ }
+        return sendJson(res, 200, { ok: true, action, ...result.visual });
+      }
+      if (action === 'confirm') {
+        // 确认当前保存的 videoId 就是正确的官方 MV（从未确认状态 → manually_confirmed）
+        const current = libraryDb.getVisual(spotifyId) || libraryDb.visualFallback();
+        const videoId = String(body.videoId || current.visualVideoId || '').trim();
+        if (!/^[A-Za-z0-9_-]{11}$/.test(videoId)) return sendError(res, 400, '没有可确认的 videoId', 'BAD_VIDEO_ID');
+        const result = officialMv.confirm(spotifyId, {
+          videoId,
+          title: current.visualVideoTitle,
+          channelTitle: current.visualChannelTitle,
+          duration: current.visualDuration,
+          score: current.visualMatchScore,
+          reason: '管理员确认',
+        });
+        if (!result.ok) return sendError(res, 400, '保存失败', result.reason);
+        invalidateQueueVisualIds(spotifyId);
+        try { refreshQueueVisualIds(); broadcast(); } catch { /* ignore */ }
+        return sendJson(res, 200, { ok: true, action, ...result.visual });
+      }
+      if (action === 'clear') {
+        const result = officialMv.clear(spotifyId);
+        if (!result.ok) return sendError(res, 400, '清除失败', result.reason);
+        invalidateQueueVisualIds(spotifyId);
+        try { refreshQueueVisualIds(); broadcast(); } catch { /* ignore */ }
+        return sendJson(res, 200, { ok: true, action, ...result.visual });
+      }
+      return sendError(res, 400, '不支持的操作', 'BAD_ACTION');
+    } catch (error) {
+      // 搜索失败（没有 Key / 配额）：如实返回，不写入任何状态
+      return sendError(res, 502, error.message || 'MV 搜索失败', error.code || 'MV_SEARCH_FAILED');
+    }
   }
   // 从曲库删除一首歌（DB 记录 + 成品/封面/歌词/原始 WAV）。
   // 前端一直是 DELETE /api/library/admin/tracks/:id，但服务端以前没有这个路由，
@@ -1637,13 +2061,19 @@ async function handleApi(req, res, url) {
     }
     const matchedKeyword = matchedBlacklistKeyword(title);
     if (matchedKeyword) return sendError(res, 400, `视频标题含黑名单关键字“${matchedKeyword}”`, 'SONG_BLACKLISTED', { keyword: matchedKeyword });
-    const queuedCount = state.songs.filter(song => song.sessionId === session.id && song.status === 'queued').length;
+    // 配额要把「准备中」也算进去：本地曲目点下去先进入 preparing（后台下载/分离），
+    // 以前只数 queued，用户会看到"明明只点了一首却说达到上限"，
+    // 而且准备中的歌可以无限连点，绕过每人上限。
+    const quotaStatuses = ['queued', 'preparing', 'prepare_failed'];
+    const queuedCount = state.songs.filter(song => song.sessionId === session.id && quotaStatuses.includes(song.status)).length;
     if (queuedCount >= state.settings.maxQueuedSongsPerGuest) return sendError(res, 409, `已达到上限：当前 ${queuedCount} 首，最多 ${state.settings.maxQueuedSongsPerGuest} 首`, 'QUEUE_LIMIT', { current: queuedCount, max: state.settings.maxQueuedSongsPerGuest });
     // 去重必须用 songKey：本地曲目的 videoId 是 null，直接比 videoId 会让
     // "null === null" 把所有本地歌都判成重复（只剩第一首能点）。
     // 「还在制作中」的项也算重复，否则用户连点两次会堆出两条一样的歌。
     const key = songKey({ source, videoId: body.videoId, spotifyId: body.spotifyId });
-    const activeStatuses = ['queued', 'preparing'];
+    // 去重也覆盖 prepare_failed：制作失败的歌还在队列里占位，用户重新点同一首
+    // 会被判定为"已经点过"并给出可操作的提示（而不是堆出两条失败项）。
+    const activeStatuses = ['queued', 'preparing', 'prepare_failed'];
     if (!state.settings.allowDuplicatePerSession && state.songs.some(song => song.sessionId === session.id && songKey(song) === key && activeStatuses.includes(song.status))) return sendError(res, 409, '你已经点过这首歌', 'DUPLICATE_SESSION_SONG');
     if (!state.settings.allowDuplicateVideo && state.songs.some(song => songKey(song) === key && activeStatuses.includes(song.status))) return sendError(res, 409, '这首歌已经在等待队列中', 'DUPLICATE_VIDEO');
     // 本地曲目要判定「能不能立刻播」：
@@ -1750,6 +2180,26 @@ async function handleApi(req, res, url) {
     });
     return sendJson(res, 200, { vocalLevel: state.playback.vocalLevel });
   }
+  // 大屏报告"官方 MV 放不出来"（IFrame onError / 初始化失败 / 不能嵌入）。
+  // 与 /api/display/vocal、/api/display/lyrics-mode 同级：大屏没有 DJ token。
+  // 只更新曲库的 visual_* 状态（→ unavailable），**不影响**本地音频播放；
+  // 播放器自己已经回退到模糊封面，这里只是让下次别再自动加载同一个坏视频。
+  if (method === 'POST' && pathname === '/api/display/visual-error') {
+    const body = await readBody(req).catch(() => ({}));
+    const spotifyId = String(body.spotifyId || '').trim();
+    if (!/^[A-Za-z0-9]{22}$/.test(spotifyId)) return sendError(res, 400, 'spotifyId 不合法', 'BAD_SPOTIFY_ID');
+    try {
+      const visual = officialMv.markUnavailable(spotifyId, {
+        videoId: body.videoId ? String(body.videoId) : null,
+        reason: String(body.reason || body.code || 'IFrame 播放失败').slice(0, 300),
+      });
+      if (!visual) return sendError(res, 404, '曲库里没有这首歌', 'TRACK_NOT_FOUND');
+      console.warn(`[mv] ${spotifyId} 的官方 MV 不可用：${String(body.reason || body.code || '').slice(0, 120)}`);
+      return sendJson(res, 200, { ok: true, visual });
+    } catch (error) {
+      return sendError(res, 500, error.message, 'MV_MARK_FAILED');
+    }
+  }
   if (method === 'POST' && pathname === '/api/display/lyrics-mode') {
     const body = await readBody(req);
     if (body.wordLevel === undefined) return sendError(res, 400, '缺少 wordLevel', 'BAD_REQUEST');
@@ -1813,7 +2263,12 @@ async function handleApi(req, res, url) {
       const body = await readBody(req);
       mutate(() => {
         if (body.action === 'pause' && currentSong()) state.playback.status = 'paused';
-        else if (body.action === 'resume' && currentSong() && !state.importantBroadcast) state.playback.status = 'playing';
+        else if (body.action === 'resume' && !state.importantBroadcast) {
+          if (currentSong()) state.playback.status = 'playing';
+          // 停播后（status=idle）队列里可能还有 queued 的歌：resume/play 要让它们继续，
+          // 否则那些歌会永远挂在队列里不播（实测状态文件里出现过 idle + 一条 queued）。
+          else startNext();
+        }
         else if (body.action === 'skip') {
           // 没有 current 时，队首可能正卡在 preparing：切歌要能跳过它，否则队列走不动。
           if (!currentSong()) skipPreparingHead();
@@ -1979,6 +2434,10 @@ function publicOrigin(req) {
 // 单独走这里而不是 serveStatic，因为要支持 Range（音频拖动必须）。
 // 模式 B：音频与封面在项目根 assets/
 // 本项目里 server.js 就在根目录，public/ 的上一级即根。
+//
+// 这里只服务**本地 MP3**（KaraokeMixer 的四条轨）、封面和歌词。
+// 视频模式不再播放本地 MP4：官方 MV 走 YouTube IFrame 在线播放，音频处理用的临时 MP4
+// 在生成 MP3 后就被流水线删掉（见 scripts/pipeline.py 的 cleanup 步骤）。
 const MEDIA_ROOT = process.env.MEDIA_ROOT
   ? path.resolve(process.env.MEDIA_ROOT)
   : path.resolve(PUBLIC_DIR, '..', 'assets');
@@ -1992,7 +2451,7 @@ function serveMedia(req, res, url) {
   if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) return sendError(res, 404, '资源不存在', 'NOT_FOUND');
 
   const ext = path.extname(filePath).toLowerCase();
-  const types = { '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.mp4': 'video/mp4', '.m4a': 'audio/mp4', '.lrc': 'text/plain; charset=utf-8', '.json': 'application/json; charset=utf-8', '.jpg': 'image/jpeg', '.png': 'image/png' };
+  const types = { '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.m4a': 'audio/mp4', '.lrc': 'text/plain; charset=utf-8', '.json': 'application/json; charset=utf-8', '.jpg': 'image/jpeg', '.png': 'image/png' };
   const total = fs.statSync(filePath).size;
   const range = req.headers.range;
 
@@ -2099,7 +2558,43 @@ function restorePrepareJobs() {
   // 丢了队列项、但任务还在跑（用户已删歌）的情况：任务继续，不需要额外处理
   if (restored || requeued) console.log(`[prepare] 恢复后台任务：jobs=${restored} requeued=${requeued}`);
   else if (prepareQueue.pending.length) console.log(`[prepare] 待执行任务 ${prepareQueue.pending.length} 个`);
+  // 队列里的歌如果还没匹配过官方 MV，顺手补一次（与音频处理并行）
+  if (!youtube.hasKey() && !ytmusic.enabled()) {
+    console.log('[mv] 未配置 YouTube API Key，且 YouTube Music 源不可用：官方 MV 匹配跳过，视频模式用模糊封面');
+  } else if (ytmusic.enabled()) {
+    console.log('[mv] 官方 MV 首选源：YouTube Music（ytmusicapi，免配额）；官方 Data API 兜底');
+  }
+  resumeIdleQueueOnBoot();
   schedulePrepareSync();
+}
+
+/**
+ * 重启后恢复播放。
+ *
+ * 状态文件里可能是 `playback.status = 'idle'` 但队列里还有 `queued` 的歌
+ * （DJ 停过播、或上个进程退出前刚点完歌）。以前重启后这些歌会永远挂着不播，
+ * 大屏一直停在待机画面——看起来像"点了歌没反应"。
+ * 这里在启动时补一次 startNext()，让队首继续播。
+ */
+function resumeIdleQueueOnBoot() {
+  try {
+    if (state.importantBroadcast) return;
+    if (currentSong()) {
+      // 当前歌还在（程序异常退出）：把状态拉回 playing，让大屏继续
+      if (state.playback.status !== 'paused') state.playback.status = 'playing';
+      return;
+    }
+    const ready = queueOrder.pendingSongs(state.songs);
+    if (ready.length) {
+      const started = startNext();
+      if (started) {
+        console.log(`[playback] 启动恢复：从队列继续播放「${started.title}」`);
+        persist();
+      }
+    }
+  } catch (error) {
+    console.warn(`[playback] 启动恢复失败：${error.message}`);
+  }
 }
 
 if (require.main === module) start();

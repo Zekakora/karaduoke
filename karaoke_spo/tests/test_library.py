@@ -295,7 +295,100 @@ def test_foreign_key_cascade():
     assert conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0] == 1
 
 
-# ---------------------------------------------------------------- 9. JSON 序列化 / CLI 辅助
+# ---------------------------------------------------------------- 9. 官方 MV 字段（迁移 / 读写）
+@case
+def test_visual_migration_idempotent():
+    """老库（没有 visual_* 列）启动时自动补列；重复迁移不会重复加列、不会动已有数据。"""
+    path = Path(tempfile.mkdtemp(prefix="legacy-", dir=TMP_DIR)) / "legacy.db"
+    conn = library.connect(path)
+    # 模拟老库：只有最老的一批列
+    conn.executescript("""
+        CREATE TABLE tracks (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          spotify_id TEXT NOT NULL UNIQUE,
+          title TEXT NOT NULL,
+          artists TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'new',
+          source_video_id TEXT,
+          duration_ms INTEGER
+        );
+    """)
+    conn.execute(
+        "INSERT INTO tracks (spotify_id, title, artists, status, source_video_id) VALUES (?,?,?,?,?)",
+        ("legacy000000000000000001", "Old Song", '["Old Artist"]', "separated", "legacyVideo"),
+    )
+    conn.commit()
+
+    added = library._migrate(conn)
+    assert "tracks.visual_video_id" in added, added
+    assert "tracks.visual_match_status" in added, added
+    # 老歌自动进入待匹配状态，其它字段不变
+    row = library.get_track(conn, "legacy000000000000000001")
+    assert row["visual_match_status"] == "pending", row
+    assert row["visual_video_id"] is None
+    assert row["source_video_id"] == "legacyVideo", "音频来源不能被动到"
+    assert row["title"] == "Old Song"
+
+    # 再迁移两次：不新增列、数据不变（幂等）
+    assert library._migrate(conn) == []
+    assert library._migrate(conn) == []
+    row2 = library.get_track(conn, "legacy000000000000000001")
+    assert row2["visual_match_status"] == "pending"
+    assert row2["source_video_id"] == "legacyVideo"
+
+
+@case
+def test_visual_update_and_source_independence():
+    """visual_video_id 与 source_video_id 完全独立：写一个不会覆盖另一个。"""
+    conn = fresh_conn()
+    tid = library.upsert_track(conn, meta())
+    library.update_source(conn, tid, source="youtube", video_id="audioSource1",
+                          url="u", title="t", score=88.0, reason="r")
+
+    v = library.update_visual(conn, "sp1", status="auto_matched", video_id="dQw4w9WgXcQ",
+                              video_title="MV title", channel_title="VEVO", duration=201,
+                              score=92.5, reason="高分", candidates=[{"videoId": "dQw4w9WgXcQ"}],
+                              force=True)
+    assert v["visual_video_id"] == "dQw4w9WgXcQ", v
+    assert v["visual_match_status"] == "auto_matched"
+    assert abs(v["visual_match_score"] - 92.5) < 1e-9
+    assert v["visual_matched_at"], v
+    assert v["candidates"] and v["candidates"][0]["videoId"] == "dQw4w9WgXcQ"
+    t = library.get_track(conn, "sp1")
+    assert t["source_video_id"] == "audioSource1", "音频来源 ID 被 MV 覆盖了"
+    assert t["visual_video_id"] == "dQw4w9WgXcQ"
+    assert isinstance(t["visual_candidates"], list), "candidates 应解析成 list"
+
+    # 非法状态 → ValueError；非法 videoId 被忽略（不写坏值）
+    for bad in ("bogus", ""):
+        try:
+            library.update_visual(conn, "sp1", status=bad, force=True)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"非法状态应当 ValueError: {bad!r}")
+    assert library.update_visual(conn, "sp1", video_id="short", status="auto_matched",
+                                 force=True)["visual_video_id"] == "dQw4w9WgXcQ"
+
+    # 不 force 时不能覆盖 manually_confirmed
+    library.update_visual(conn, "sp1", status="manually_confirmed", video_id="kJQP7kiw5Fk", force=True)
+    same = library.update_visual(conn, "sp1", status="auto_matched", video_id="aaaaaaaaaaa")
+    assert same["visual_video_id"] == "kJQP7kiw5Fk", "手动确认被自动结果覆盖"
+    assert same["visual_match_status"] == "manually_confirmed"
+    # 但 unavailable 总是允许写（视频挂了必须记下来，否则每次播放都会重试它）
+    gone = library.update_visual(conn, "sp1", status="unavailable", reason="已删除")
+    assert gone["visual_match_status"] == "unavailable"
+    assert gone["visual_video_id"] is None, "不可用时清掉 videoId，避免反复加载"
+
+    # 清除：全部回到 pending
+    cleared = library.update_visual(conn, "sp1", clear=True, force=True)
+    assert cleared["visual_video_id"] is None
+    assert cleared["visual_match_status"] == "pending"
+    assert cleared["candidates"] == []
+    assert library.get_track(conn, "sp1")["source_video_id"] == "audioSource1"
+
+
+# ---------------------------------------------------------------- 10. JSON 序列化 / CLI 辅助
 @case
 def test_rows_are_json_serializable():
     conn = fresh_conn()

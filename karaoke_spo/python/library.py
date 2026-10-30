@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sqlite3
 import sys
 from datetime import datetime, timezone
@@ -67,6 +68,10 @@ def connect(db_path: Path | str | None = None) -> sqlite3.Connection:
 
 
 # 已有的库需要补列（CREATE TABLE IF NOT EXISTS 不会改已存在的表）
+#
+# 值 = 列定义。带默认值的 NOT NULL 列写成 `TEXT NOT NULL DEFAULT 'pending'`：
+# SQLite 的 ADD COLUMN 允许常量默认值，所以老曲目会直接得到 'pending'，无需回填。
+# 迁移可重复执行：列已存在就跳过，不会重复加列、也不会动已有数据。
 _MIGRATIONS: dict[str, dict[str, str]] = {
     "tracks": {
         "album_art_path": "TEXT",
@@ -76,7 +81,22 @@ _MIGRATIONS: dict[str, dict[str, str]] = {
         "disc_number": "INTEGER",
         "explicit": "INTEGER",
         "popularity": "INTEGER",
+        # 官方 MV（visualVideoId 系列）。与 source_video_id（音频处理用）互不相干。
+        "visual_video_id": "TEXT",
+        "visual_match_status": "TEXT NOT NULL DEFAULT 'pending'",
+        "visual_match_score": "REAL",
+        "visual_video_title": "TEXT",
+        "visual_channel_title": "TEXT",
+        "visual_duration": "INTEGER",
+        "visual_match_reason": "TEXT",
+        "visual_matched_at": "TEXT",
+        "visual_candidates": "TEXT",
     },
+}
+
+# 迁移补的列要能建索引（IF NOT EXISTS，可重复执行）
+_MIGRATION_INDEXES: dict[str, dict[str, list[str]]] = {
+    "tracks": {"idx_tracks_visual": ["visual_video_id"]},
 }
 
 
@@ -92,16 +112,27 @@ def _migrate(conn: sqlite3.Connection) -> list[str]:
                 continue
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {coltype}")
             added.append(f"{table}.{col}")
+        for index, index_cols in _MIGRATION_INDEXES.get(table, {}).items():
+            conn.execute(f"CREATE INDEX IF NOT EXISTS {index} ON {table}({', '.join(index_cols)})")
     if added:
         conn.commit()
     return added
 
 
 def init_db(conn: sqlite3.Connection | None = None, db_path: Path | str | None = None) -> sqlite3.Connection:
-    """建表（幂等）。传 conn 则复用，否则按 db_path（或默认）新开。"""
+    """建表（幂等）。传 conn 则复用，否则按 db_path（或默认）新开。
+
+    顺序很重要：**先迁移补列，再执行 schema.sql**。
+    schema.sql 里有 `CREATE INDEX ... ON tracks(visual_video_id)`，而
+    `CREATE TABLE IF NOT EXISTS` 不会给已存在的老表加列 —— 先跑 schema.sql 的话，
+    老库会因为"没有 visual_video_id 这一列"直接建索引失败（no such column）。
+    """
     conn = conn or connect(db_path)
+    _migrate(conn)
     conn.executescript(SCHEMA.read_text(encoding="utf-8"))
     conn.commit()
+    # schema.sql 跑完再补一次：首次建库时表是新建的，迁移那一步还没表可改，这里无事可做；
+    # 老库在第一步已经补齐。保持两次调用纯粹是为了"任何入口都幂等"。
     _migrate(conn)
     return conn
 
@@ -112,6 +143,14 @@ def _track_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
         return None
     d = dict(row)
     d["artists"] = _parse_artists(d.get("artists"))
+    # visual_candidates 是 JSON 字符串，解析成 list 更好用（旧库可能没有这一列）
+    raw_candidates = d.pop("visual_candidates", None)
+    if raw_candidates:
+        try:
+            parsed = json.loads(raw_candidates)
+            d["visual_candidates"] = parsed if isinstance(parsed, list) else []
+        except (TypeError, ValueError):
+            d["visual_candidates"] = []
     return d
 
 
@@ -262,6 +301,159 @@ def update_audio(
         (path, bytes_, sha256, now(), track_id),
     )
     conn.commit()
+
+
+# ---------------------------------------------------------------- 官方 MV（visualVideoId）
+#
+# 与 update_source() 完全分开：source_video_id 是**音频处理**用的 YouTube 视频，
+# visual_video_id 是**画面**用的官方 MV。两者独立存储、独立更新，任何一方都不会覆盖另一方。
+# 状态机见 docs/official-mv.md：
+#   pending（默认，等待匹配/管理员确认） → auto_matched（高置信度自动匹配）
+#                                         → manually_confirmed（管理员确认/手填）
+#                                         → not_found（没找到合适的）
+#                                         → unavailable（视频不可用/不允许嵌入）
+VISUAL_STATUSES = {"pending", "auto_matched", "manually_confirmed", "not_found", "unavailable"}
+# 这些状态代表"管理员已经明确拍板"：自动匹配不允许覆盖它们。
+VISUAL_LOCKED_STATUSES = {"manually_confirmed"}
+# 这些状态下已有可用的 visual_video_id，播放时直接复用，不再调 YouTube 搜索。
+VISUAL_REUSABLE_STATUSES = {"auto_matched", "manually_confirmed"}
+
+
+def valid_video_id(video_id: Any) -> str | None:
+    """校验 YouTube videoId（11 位 base64url 字符）；不合法返回 None。"""
+    text = str(video_id or "").strip()
+    if not text:
+        return None
+    return text if re.fullmatch(r"[A-Za-z0-9_-]{11}", text) else None
+
+
+# 旧名字保留（内部/测试可能引用）
+_valid_video_id = valid_video_id
+
+
+def get_visual(conn: sqlite3.Connection, spotify_id: str) -> dict[str, Any] | None:
+    """读一首歌的官方 MV 匹配结果（没有记录返回 None）。"""
+    row = conn.execute(
+        """SELECT visual_video_id, visual_match_status, visual_match_score, visual_video_title,
+                  visual_channel_title, visual_duration, visual_match_reason, visual_matched_at,
+                  visual_candidates
+             FROM tracks WHERE spotify_id = ?""",
+        (spotify_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return _visual_dict(row)
+
+
+def _visual_dict(row: sqlite3.Row) -> dict[str, Any]:
+    d = dict(row)
+    raw_candidates = d.pop("visual_candidates", None)
+    candidates: list = []
+    if raw_candidates:
+        try:
+            parsed = json.loads(raw_candidates)
+            candidates = parsed if isinstance(parsed, list) else []
+        except (TypeError, ValueError):
+            candidates = []
+    d["candidates"] = candidates
+    return d
+
+
+def update_visual(
+    conn: sqlite3.Connection,
+    spotify_id: str,
+    *,
+    status: str | None = None,
+    video_id: str | None = None,
+    video_title: str | None = None,
+    channel_title: str | None = None,
+    duration: int | None = None,
+    score: float | None = None,
+    reason: str | None = None,
+    candidates: list | None = None,
+    clear: bool = False,
+    force: bool = False,
+) -> dict[str, Any] | None:
+    """写入官方 MV 匹配结果。
+
+    - `status` 必须是 VISUAL_STATUSES 之一；
+    - `clear=True`：清空 visual_video_id 及元数据，状态回到 pending（管理员"清除 MV"）；
+    - `force=False`（默认）：**不覆盖** manually_confirmed。重复自动搜索时，
+      管理员已经确认过的结果保持原样（返回原记录）。管理员主动改/确认时传 force=True；
+        `status='unavailable'` 也总是允许写入 —— 视频挂了必须记下来，否则每次播放都会重试它。
+    - 成功状态带时间戳 visual_matched_at。
+
+    返回写入后的记录。
+    """
+    sid = str(spotify_id or "").strip()
+    row = conn.execute("SELECT id, visual_match_status FROM tracks WHERE spotify_id = ?", (sid,)).fetchone()
+    if row is None:
+        return None
+    current = row["visual_match_status"] or "pending"
+    track_id = int(row["id"])
+
+    if status is not None and status not in VISUAL_STATUSES:
+        raise ValueError(f"未知 MV 状态: {status!r}（可选: {', '.join(sorted(VISUAL_STATUSES))}）")
+
+    if not force and status != "unavailable" and current in VISUAL_LOCKED_STATUSES:
+        # 管理员已经确认过：自动匹配不得覆盖
+        return get_visual(conn, sid)
+
+    stamp = now()
+    if clear:
+        conn.execute(
+            """UPDATE tracks SET visual_video_id = NULL, visual_match_status = 'pending',
+                      visual_match_score = NULL, visual_video_title = NULL, visual_channel_title = NULL,
+                      visual_duration = NULL, visual_match_reason = NULL, visual_matched_at = NULL,
+                      visual_candidates = NULL, updated_at = ?
+                WHERE id = ?""",
+            (stamp, track_id),
+        )
+        conn.commit()
+        return get_visual(conn, sid)
+
+    video_id = _valid_video_id(video_id)
+    fields: list[str] = []
+    params: list[Any] = []
+    for col, value in (
+        ("visual_video_id", video_id),
+        ("visual_video_title", video_title),
+        ("visual_channel_title", channel_title),
+        ("visual_duration", int(duration) if duration is not None else None),
+        # 保留两位小数：评分是给人看的，不需要浮点噪声
+        ("visual_match_score", round(float(score), 2) if score is not None else None),
+        ("visual_match_reason", reason),
+    ):
+        if value is not None:
+            fields.append(f"{col} = ?")
+            params.append(value)
+    if candidates is not None:
+        fields.append("visual_candidates = ?")
+        params.append(json.dumps(candidates, ensure_ascii=False)[:200_000])
+    if status == "unavailable" and video_id is None:
+        # 明确"这个视频不可用且没有替代"：清掉 id，避免播放端反复加载同一个坏视频。
+        # （放在下面赋值之前：status 为 None 时这里的 reason 已经写进 params）
+        fields.append("visual_video_id = NULL")
+        if reason is not None:
+            fields.append("visual_match_reason = ?")
+            params.append(reason)
+    if status is not None:
+        fields.append("visual_match_status = ?")
+        params.append(status)
+        fields.append("visual_matched_at = ?")
+        params.append(stamp)
+    elif reason is not None and "visual_video_id = NULL" not in fields:
+        # 只更新元数据（比如管理员手填 videoId 但状态另给）时，也刷新时间戳
+        fields.append("visual_matched_at = ?")
+        params.append(stamp)
+    if not fields:
+        return get_visual(conn, sid)
+    fields.append("updated_at = ?")
+    params.append(stamp)
+    params.append(track_id)
+    conn.execute(f"UPDATE tracks SET {', '.join(fields)} WHERE id = ?", params)
+    conn.commit()
+    return get_visual(conn, sid)
 
 
 def find_by_sha(conn: sqlite3.Connection, sha256: str) -> tuple | None:

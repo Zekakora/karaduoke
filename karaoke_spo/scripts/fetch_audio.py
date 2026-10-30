@@ -1,6 +1,10 @@
 # -*- coding: utf-8 -*-
 """从 YouTube 取音频并转成 Demucs 需要的 44.1kHz / 16-bit / stereo WAV。
 
+**这里只管音频。** 视频画面（官方 MV）由 Node 侧的 lib/official-mv.js 单独匹配，
+经 YouTube IFrame 静音在线播放，**不下载、不落盘**。早先的 `--keep-video`
+（额外下载 720p/1080p 背景视频到 assets/output/library/<id>/video.mp4）已经移除。
+
 支持两条下载路径（`--provider`）：
 
   ytdlp    现有实现：yt-dlp `ytsearch N:` 搜索 + 自算匹配分（标题 55 / 歌手 15 /
@@ -21,18 +25,16 @@
      两条路径命名一致。拿不到时退回 `<spotifyId>.wav` 并在 match.json 里记明。
 
 match.json 记录：provider、来源（videoId/url/title/歌手）、时长校验结果、匹配分。
+这里的 videoId 是**音频来源**，写进曲库的 `source_video_id`；官方 MV（画面）是另一个
+独立字段 `visual_video_id`，由 Node 侧 resolver 维护，两者互不覆盖。
 
-可选：`--keep-video` 额外保留一份 **720p MP4（无音轨）** 视频，供前端播放时做画面：
-    assets/output/library/<spotifyId>/video.mp4
-注意它和音频产物不在同一棵树（音频在 data/library/，视频在 assets/output/library/），
-所以视频必须靠 `--spotify-id` 定位目录；没有 spotifyId 时跳过视频（不猜路径）。
+临时文件：下载/转码的中间文件都在 `.tmp/`（spotDL 输出目录、yt-dlp 缓存），本脚本
+结束时清理自己用过的中间文件。`data/library/<videoId>.wav` 是**音频处理输入**，
+由 pipeline 在成片成功后统一清理（见 scripts/pipeline.py 的 cleanup 步骤）。
 
 用法:
     python\\.venv-xpu\\Scripts\\python.exe scripts\\fetch_audio.py --title "Bohemian Rhapsody" `
         --artist "Queen" --duration 355 --provider auto
-    # 同时保留 720p 视频
-    python\\.venv-xpu\\Scripts\\python.exe scripts\\fetch_audio.py --title "..." --artist "Queen" `
-        --duration 355 --spotify-id 2JiDi0qAXsPwhPqA2qaKGt --keep-video
 """
 from __future__ import annotations
 
@@ -48,7 +50,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 UPSTREAM = ROOT / "data" / "library"
-LIBRARY_DIR = ROOT / "assets" / "output" / "library"   # 前端可见的曲库（视频落这里）
 TMP_DIR = ROOT / ".tmp"
 os.environ.setdefault("TMP", str(TMP_DIR))
 os.environ.setdefault("TEMP", str(TMP_DIR))
@@ -592,216 +593,13 @@ def run_spotdl(args, out_dir: Path, want_dur: float | None, spotify_id: str | No
             "path": out_path, "timings": timings, "ffmpeg": ffmpeg}
 
 
-# ---------------------------------------------------------------- 720p 视频（--keep-video）
-
-
-# 选格式：**1080p H.264 优先**，720p 兜底。
+# ---------------------------------------------------------------- 背景视频（已移除）
 #
-# 为什么锁 avc1(H.264) 而不用 `best`：YouTube 同分辨率会同时给 av01 / vp9 / avc1，
-# `best` 会选 AV1（码率低但老设备兼容性差、软解吃 CPU）。卡拉OK常见设备是
-# 电视盒/平板/投影，H.264 最保险。
-#
-# 实测各档体积（Bohemian Rhapsody 359s）：
-#   137 = 1920x1080 avc1 1974kbps ≈ 87 MB   ← 选这个
-#   248 = 1920x1080 vp9  1391kbps ≈ 61 MB
-#   399 = 1920x1080 av01 1024kbps ≈ 45 MB
-#   136 = 1280x720  avc1  784kbps ≈ 34 MB   ← 兜底
-#
-# 注意：必须显式要 video-only 流（[acodec=none]）。带音轨的 1080p 合成体
-# 体积更大，且我们本来就要剥音轨（音频走 MP3 混音，视频全程 muted）。
-VIDEO_FORMAT = (
-    "137[acodec=none]"
-    "/137"
-    "/bestvideo[height=1080][ext=mp4][vcodec^=avc1][acodec=none]"
-    "/bestvideo[height=1080][vcodec^=avc1][acodec=none]"
-    # 720p 兜底（有些老视频没有 1080p）
-    "/136[acodec=none]"
-    "/bestvideo[height<=720][ext=mp4][vcodec^=avc1][acodec=none]"
-    "/bestvideo[height<=720][vcodec^=avc1][acodec=none]"
-    # 最后才考虑非 avc1（AV1/VP9），总比没有强
-    "/bestvideo[height<=1080][acodec=none]"
-    "/best[height<=1080]"
-)
-
-
-def ffbin(name: str) -> Path:
-    """ffmpeg/ffprobe 可执行文件路径（Windows 优先 .exe）。"""
-    bin_dir = ffmpeg_location()
-    if not bin_dir:
-        raise RuntimeError("找不到 ffmpeg/ffprobe，无法处理视频")
-    exe = Path(bin_dir) / f"{name}.exe"
-    return exe if exe.exists() else Path(bin_dir) / name
-
-
-def probe_streams(path: Path) -> dict:
-    """读第一条视频流的分辨率/编码 + 是否有音频流。"""
-    ffprobe = ffbin("ffprobe")
-    proc = subprocess.run(
-        [str(ffprobe), "-v", "error", "-show_entries",
-         "stream=codec_type,codec_name,width,height:format=duration",
-         "-of", "json", str(path)],
-        capture_output=True, text=True, timeout=120, encoding="utf-8", errors="replace",
-    )
-    if proc.returncode != 0:
-        raise RuntimeError(f"ffprobe 失败：{(proc.stderr or '')[-300:]}")
-    data = json.loads(proc.stdout or "{}")
-    streams = data.get("streams") or []
-    video = next((s for s in streams if s.get("codec_type") == "video"), {})
-    has_audio = any(s.get("codec_type") == "audio" for s in streams)
-    dur = (data.get("format") or {}).get("duration")
-    return {
-        "width": video.get("width"),
-        "height": video.get("height"),
-        "video_codec": video.get("codec_name"),
-        "has_audio": has_audio,
-        "duration_s": round(float(dur), 3) if dur else None,
-    }
-
-
-def download_video(video_id: str, dest: Path, *, force: bool = False, timeout_s: int = 900) -> dict:
-    """下载 1080p(H.264) MP4 并剥成无音轨，落到 `dest`。
-
-    流程：yt-dlp 下到 `.tmp/video-mux/`（带音轨的 720p MP4，下载更稳）
-          → `ffmpeg -an -c:v copy` 剥音轨 → `dest`
-          → 删掉中间文件（成功或失败都删）。
-    失败抛 RuntimeError（不静默跳过）。
-    """
-    import yt_dlp
-
-    dest = Path(dest)
-    work = TMP_DIR / "video-mux" / video_id
-    work.mkdir(parents=True, exist_ok=True)
-    leftover = list(work.glob(f"{video_id}.*"))
-
-    t0 = time.perf_counter()
-    info: dict = {}
-    src: Path | None = None
-    try:
-        # 注意：调用方（add_video / fetch_audio）已负责判断"要不要下载"，
-        # 本函数只管下载 → 剥音轨 → 落盘，所以这里不自己跳过错失与 `--force` 相关的语义。
-        opts = {
-            "format": VIDEO_FORMAT,
-            "noplaylist": True,
-            "js_runtimes": {"node": {}},
-            "quiet": True,
-            "no_warnings": True,
-            "outtmpl": str(work / f"{video_id}.%(ext)s"),
-            "ffmpeg_location": ffmpeg_location(),
-            "cachedir": str(ROOT / ".cache" / "yt-dlp"),
-            "socket_timeout": 30,
-            # 720p video + audio 需要合并时才用到 ffmpeg，这里显式指定
-            "merge_output_format": "mp4",
-        }
-        print(f"[i] (>video) 下载 1080p MP4: {video_id}")
-        t_dl = time.perf_counter()
-        try:
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                raw = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=True)
-        except Exception as e:  # noqa: BLE001
-            raise RuntimeError(f"yt-dlp 下载视频失败（{video_id}）：{e}") from e
-        dl_s = time.perf_counter() - t_dl
-        info = {
-            "video_id": video_id,
-            "title": raw.get("title"),
-            "format_id": raw.get("format_id"),
-            "download_s": round(dl_s, 2),
-        }
-        # 找到实际落盘的文件（可能是 .mp4 / .mkv / .webm）
-        made = [p for p in work.glob(f"{video_id}.*")
-                if p.is_file() and p.suffix.lower() not in (".part", ".ytdl")]
-        if not made:
-            raise RuntimeError(f"yt-dlp 报告完成但没找到文件：{work}")
-        src = max(made, key=lambda p: p.stat().st_size)
-        print(f"[+] 原始视频 {src.name} ({src.stat().st_size / 1024 / 1024:.1f} MB, {dl_s:.1f}s)")
-
-        # 剥音轨（纯拷贝视频流，不重编码）
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        tmp_out = dest.with_suffix(".part.mp4")
-        proc = subprocess.run(
-            [str(ffbin("ffmpeg")), "-hide_banner", "-loglevel", "error", "-y",
-             "-i", str(src), "-an", "-c:v", "copy", "-movflags", "+faststart", str(tmp_out)],
-            capture_output=True, text=True, timeout=timeout_s, encoding="utf-8", errors="replace",
-        )
-        if proc.returncode != 0 or not tmp_out.exists() or tmp_out.stat().st_size == 0:
-            tmp_out.unlink(missing_ok=True)
-            raise RuntimeError(f"ffmpeg 剥音轨失败：{(proc.stderr or '')[-400:]}")
-
-        # 先校验**暂存文件**，通过才落到 dest —— 否则一个不合格的文件会就这样留在
-        # assets/output/library/<id>/video.mp4 里，被后续逻辑当成"已有视频"跳过。
-        stream = probe_streams(tmp_out)
-        if stream["has_audio"]:
-            tmp_out.unlink(missing_ok=True)
-            raise RuntimeError("剥音轨后仍检测到音频流（未落盘）")
-        # 分辨率校验：接受 1080p / 720p。不强制等于某个值，因为源视频画幅
-        # 可能不是标准 16:9（例如 Mr. Brightside 源就是 720x732），
-        # 只要高度落在可播范围内即可；过低（<700）说明降级到了渣源，判失败。
-        height = stream.get("height") or 0
-        if height < 700:
-            tmp_out.unlink(missing_ok=True)
-            raise RuntimeError(
-                f"分辨率过低：{stream['width']}x{stream['height']}（<700p，源视频画质不足；未落盘）"
-            )
-        tmp_out.replace(dest)
-
-        return {
-            "ok": True,
-            "path": str(dest),
-            "bytes": dest.stat().st_size,
-            "elapsed_s": round(time.perf_counter() - t0, 2),
-            **{k: v for k, v in info.items() if k},
-            **stream,
-        }
-    finally:
-        # 中间文件一律删掉（含上次残留的 .part 和本次的暂存 .part.mp4）
-        junk = leftover + list(work.glob(f"{video_id}.*"))
-        staged = dest.with_suffix(".part.mp4")
-        if staged.exists():
-            junk.append(staged)
-        for p in junk:
-            try:
-                if p.is_file():
-                    p.unlink()
-            except OSError:
-                pass
-        try:
-            work.rmdir()
-        except OSError:
-            pass
-
-
-def video_dest(spotify_id: str) -> Path:
-    return LIBRARY_DIR / spotify_id / "video.mp4"
-
-
-def maybe_keep_video(args, video_id: str | None) -> dict | None:
-    """--keep-video 的入口：没有 spotifyId / videoId 就明确跳过并说明原因。"""
-    if not getattr(args, "keep_video", False):
-        return None
-    if not args.spotify_id:
-        print("[!] --keep-video 需要 --spotify-id 才能定位 assets/output/library/<id>/，跳过视频")
-        return {"ok": False, "skipped": True, "reason": "缺少 --spotify-id"}
-    if not video_id:
-        print("[!] 没有可用的 YouTube videoId，跳过视频")
-        return {"ok": False, "skipped": True, "reason": "没有 videoId"}
-    dest = video_dest(args.spotify_id)
-    if dest.exists():
-        try:
-            stream = probe_streams(dest)
-        except Exception as e:  # noqa: BLE001
-            print(f"[!] 已有 video.mp4 但探测失败（{e}），重新下载")
-        else:
-            print(f"[=] 视频已存在，跳过：{dest} ({dest.stat().st_size / 1024 / 1024:.1f} MB)")
-            return {"ok": True, "path": str(dest), "skipped": True,
-                    "bytes": dest.stat().st_size, **stream}
-    try:
-        res = download_video(video_id, dest)
-    except Exception as e:  # noqa: BLE001
-        print(f"[x] 视频保留失败（{video_id}）：{e}")
-        return {"ok": False, "reason": str(e)}
-    print(f"[+] 视频 => {dest} ({res['bytes'] / 1024 / 1024:.1f} MB, "
-          f"{res['width']}x{res['height']}, 无音轨, {res['elapsed_s']}s)")
-    return res
-
+# 这里曾经是 --keep-video：用 yt-dlp 额外下载 1080p/720p 背景 MP4（剥掉音轨）到
+# assets/output/library/<spotifyId>/video.mp4，供视频模式本地播放。
+# 现在视频模式改成 YouTube 官方 MV（IFrame 静音在线播放，见 lib/official-mv.js），
+# 本地背景 MP4 不再生成、不再保存、不再播放，所以整段下载/转码逻辑删掉了。
+# 注意：**音频来源**的下载（yt-dlp/spotDL 取音频 → 44.1k WAV）与它无关，完整保留。
 
 # ---------------------------------------------------------------- main
 
@@ -843,9 +641,6 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true", help="只搜索与打分，不下载")
     ap.add_argument("--match-out", default=None,
                     help="把 match.json 写到指定路径（pipeline 用，避免和旧记录抢目录）")
-    ap.add_argument("--keep-video", action="store_true",
-                    help="额外下载 720p MP4（剥掉音轨）到 assets/output/library/<spotifyId>/video.mp4；"
-                         "需要 --spotify-id，默认关闭")
     args = ap.parse_args()
 
     if args.provider in ("spotdl", "auto") and not args.spotify_id:
@@ -893,17 +688,10 @@ def main() -> int:
     path = Path(result["path"])
     chosen = result.get("chosen") or {}
     stem = chosen.get("id") or path.stem
-    # 视频按"音频最终采用的同一个 videoId"取，保证画面与音频同源
-    video = maybe_keep_video(args, chosen.get("id"))
+    # 只记录音频来源。官方 MV（visual_video_id）由 Node 侧 lib/official-mv.js 单独匹配，
+    # 这里既不下载视频、也不写任何视频字段。
     meta = build_match(args.provider, result, args, args.spotify_id)
     meta["ok"] = True
-    if video is not None:
-        meta["video"] = video
-        if not video.get("ok"):
-            # 音频成功但视频失败：明确报错（退出码 4），不静默
-            p = write_match(out_dir, stem, meta, args.match_out)
-            print(f"[x] 音频已下载，但视频保留失败：{video.get('reason')}")
-            return 4
     p = write_match(out_dir, stem, meta, args.match_out)
     print(f"[+] provider={meta['used_provider']} source={chosen.get('url')} "
           f"{path.stat().st_size / 1024 / 1024:.1f} MB")
