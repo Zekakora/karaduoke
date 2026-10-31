@@ -41,3 +41,9 @@ desktop.ini
 
 # ── 整理时移出的文件（确认无用后整个删除）────────────────────────────
 rubbish/
+/dist/
+/.workbuddy/
+/karaoke_spo/.cache/
+/karaoke_spo/data/
+/karaoke_spo/.env
+/karaoke_ytb/data/
