@@ -22,6 +22,7 @@ import os
 import re
 import sqlite3
 import sys
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -103,12 +104,18 @@ _MIGRATIONS: dict[str, dict[str, str]] = {
         "acc_loudness_measured_at": "TEXT",
         "acc_loudness_version": "INTEGER",
         "acc_loudness_source": "TEXT",
+        # 同一首歌的规范化身份（歌名 + 歌手完全一致 → 同一个 canonical_id）。
+        # 详见 canonical_key() / ensure_canonical()。
+        "canonical_id": "TEXT",
     },
 }
 
 # 迁移补的列要能建索引（IF NOT EXISTS，可重复执行）
 _MIGRATION_INDEXES: dict[str, dict[str, list[str]]] = {
-    "tracks": {"idx_tracks_visual": ["visual_video_id"]},
+    "tracks": {
+        "idx_tracks_visual": ["visual_video_id"],
+        "idx_tracks_canonical": ["canonical_id"],
+    },
 }
 
 
@@ -146,7 +153,112 @@ def init_db(conn: sqlite3.Connection | None = None, db_path: Path | str | None =
     # schema.sql 跑完再补一次：首次建库时表是新建的，迁移那一步还没表可改，这里无事可做；
     # 老库在第一步已经补齐。保持两次调用纯粹是为了"任何入口都幂等"。
     _migrate(conn)
+    _refresh_canonical_columns(conn)
     return conn
+
+
+def _refresh_canonical_columns(conn: sqlite3.Connection) -> None:
+    """填充 canonical_key 与 canonical_id（幂等，每次 init_db 都跑）。
+
+    - `canonical_key` 由 canonical_key(title, artists) 算出来（规范化歌名 + 排序后的歌手）；
+      写入路径（upsert_track）会显式维护它，这里只给老数据补齐，并修正改过歌名的记录。
+    - `canonical_id` 先全部自指，再用 canonical_key 找出同组记录并统一指向主记录。
+    """
+    try:
+        have = {r["name"] for r in conn.execute("PRAGMA table_info(tracks)").fetchall()}
+    except sqlite3.Error:
+        return
+    if "canonical_id" not in have:
+        return
+    # canonical_key 是普通 TEXT 列（不是生成列：SQLite 不允许 ALTER TABLE 追加
+    # STORED 生成列，老库会直接报 "cannot add a STORED column"）。
+    if "canonical_key" not in have:
+        try:
+            conn.execute("ALTER TABLE tracks ADD COLUMN canonical_key TEXT")
+            conn.commit()
+        except sqlite3.Error as error:  # noqa: BLE001
+            print(f"[library] 补 canonical_key 列失败（{error}），跳过同一首歌合并")
+            return
+    conn.create_function("tracks_canonical_key", 2, canonical_key)
+    conn.execute(
+        "UPDATE tracks SET canonical_key = tracks_canonical_key(title, artists) "
+        "WHERE canonical_key IS NULL OR canonical_key = ''"
+    )
+    try:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tracks_canonical ON tracks(canonical_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tracks_canonkey ON tracks(canonical_key)")
+    except sqlite3.Error:
+        pass
+    regroup_same_songs(conn)
+
+
+def regroup_same_songs(conn: sqlite3.Connection) -> int:
+    """重新计算"同一首歌"的分组，返回本次合并掉的记录数。
+
+    为什么不能只在启动时算一次：任务开始（upsert_track 建记录）和结束（写 status）
+    之间可能插入别的新记录，合并关系会变。每次状态变化后都跑一遍才能保持正确 ——
+    否则会出现"同一个 canonical_key 下两条记录各自 canonical_id 指向自己"。
+    """
+    try:
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(tracks)").fetchall()}
+    except sqlite3.Error:
+        return 0
+    if "canonical_id" not in cols or "canonical_key" not in cols:
+        return 0
+    try:
+        conn.execute("UPDATE tracks SET canonical_id = spotify_id WHERE canonical_id IS NULL OR canonical_id = ''")
+        groups = conn.execute(
+            "SELECT canonical_key, group_concat(spotify_id) AS ids FROM tracks "
+            "WHERE canonical_key IS NOT NULL AND canonical_key <> '' "
+            "GROUP BY canonical_key HAVING COUNT(*) > 1"
+        ).fetchall()
+    except sqlite3.Error:
+        return 0
+    merged = 0
+    for group in groups:
+        ids = str(group["ids"]).split(",")
+        rows = conn.execute(
+            f"SELECT * FROM tracks WHERE spotify_id IN ({','.join('?' * len(ids))})", ids
+        ).fetchall()
+        # 同名同歌手还要时长接近才算同一首：按时长聚成若干簇，每簇一个主记录。
+        # 簇内任意一条时长在容差范围内即可归入（与簇首比较会漏掉"簇首恰好偏差最大"的情况）。
+        clusters: list[list[sqlite3.Row]] = []
+        for row in rows:
+            placed = False
+            for cluster in clusters:
+                if any(is_same_song(row["title"], row["artists"], row["duration_ms"],
+                                    other["title"], other["artists"], other["duration_ms"])
+                       for other in cluster):
+                    cluster.append(row)
+                    placed = True
+                    break
+            if not placed:
+                clusters.append([row])
+        for cluster in clusters:
+            if len(cluster) < 2:
+                continue
+            # 组里已有明确的主记录（canonical_id 指向组内某条记录）→ 默认沿用它，保持稳定。
+            known = [r["canonical_id"] for r in cluster if r["canonical_id"]]
+            member_ids = [r["spotify_id"] for r in cluster]
+            by_id = {r["spotify_id"]: r for r in cluster}
+            primary = next((c for c in known if c in member_ids), None)
+            # **例外：主记录不可播、组里却有可播记录** → 换成可播那条。
+            # 前端/点歌都按主记录判断"能不能播放"，主记录选错会让整组显示未就绪，
+            # 用户再点一次就触发重复下载（曾发生：主记录只有 downloaded 状态）。
+            best = max(cluster, key=lambda r: _ready_score(conn, r))
+            best_playable = _ready_score(conn, best)[0]
+            if primary is not None and best_playable:
+                if not _ready_score(conn, by_id[primary])[0]:
+                    primary = best["spotify_id"]
+            if primary is None:
+                primary = best["spotify_id"]
+            merged += sum(1 for r in cluster if r["spotify_id"] != primary or r["canonical_id"] != primary)
+            conn.execute(
+                f"UPDATE tracks SET canonical_id = ? WHERE spotify_id IN ({','.join('?' * len(member_ids))})",
+                [primary, *member_ids],
+            )
+    conn.commit()
+    return merged
 
 
 # ---------------------------------------------------------------- 行 -> dict
@@ -180,6 +292,246 @@ def _parse_artists(raw: Any) -> list[str]:
     return [str(x) for x in val] if isinstance(val, list) else []
 
 
+# ---------------------------------------------------------------- 同一首歌的规范化身份
+#
+# 同一首歌在 Spotify 上可能有多个 track_id：单曲 EP 版、专辑版、精选集版、不同地区版，
+# **专辑不同但其实是同一首歌**。过去会被当成两首歌：下载两次、Demucs 分离两次、占两份磁盘。
+#
+# 判定规则（按用户要求，以 Spotify 源数据为准）：
+#   **同一歌手 + 同一歌名 + 时长差 ≤ SAME_SONG_TOLERANCE_S 秒 → 同一首歌**
+#   专辑**不参与**判定（EP 版和 Album 版算同一首）。
+#
+# 为什么必须带时长：同名歌经常是完全不同的作品（Intro / Interlude / 同名主打歌），
+# 时长是最便宜可靠的区分信号。容差默认 8 秒（覆盖片尾淡出的几秒差异），
+# 可用环境变量 KARAOKE_SAME_SONG_TOLERANCE_S 调整。
+#
+# 文本规范化只做"明显无意义"的归一化，不做模糊匹配：
+#   * 全角/半角、大小写、多余空白；
+#   * 弯引号 vs 直引号、各类连字符；
+#   * 歌手列表排序后比较（"A, B" 与 "B, A" 视为同一组）；
+#   * **不去掉** (feat. …) / - Remastered 之类的后缀 —— 那些通常是不同版本。
+#
+# 每组有一条"主记录"：canonical_id == 自己的 spotify_id，其余记录 canonical_id 指向它。
+# 主记录的选择：已有分离产物 > 已下载音频 > id 最小（最早入库）。
+# 从属记录**不复制文件**，而是用自己 spotify_id 命名的目录，里面是指向主记录产物的
+# 硬链接（NTFS 同卷瞬时完成、不占额外空间），播放端所有 URL 形状保持不变。
+
+_QUOTE_MAP = str.maketrans({
+    "\u2018": "'", "\u2019": "'", "\u201a": "'", "\u201b": "'",
+    "\u201c": '"', "\u201d": '"', "\u201e": '"', "\u2032": "'", "\u2033": '"',
+    "\u2010": "-", "\u2011": "-", "\u2012": "-", "\u2013": "-", "\u2014": "-", "\u2015": "-", "\u2212": "-",
+    "\u3000": " ",
+})
+
+# 时长容差（秒）：同一首歌在不同专辑/版本里通常差 0~3 秒（前奏/片尾多几秒），
+# 8 秒足够宽松，又不会把同名但不同的歌（通常差几十秒）并进来。
+SAME_SONG_TOLERANCE_S = float(os.environ.get("KARAOKE_SAME_SONG_TOLERANCE_S") or 8)
+
+
+def _normalize_text(value: Any) -> str:
+    text = unicodedata.normalize("NFKC", str(value or ""))
+    text = text.translate(_QUOTE_MAP).lower()
+    return " ".join(text.split())
+
+
+def _artist_names(artists: Any) -> list[str]:
+    if isinstance(artists, str):
+        try:
+            parsed = json.loads(artists)
+            items = parsed if isinstance(parsed, list) else [parsed]
+        except (TypeError, ValueError):
+            items = [a.strip() for a in artists.split(",")]
+    else:
+        items = list(artists or [])
+    return sorted({_normalize_text(a) for a in items if _normalize_text(a)})
+
+
+def canonical_key(title: Any, artists: Any) -> str:
+    """同一首歌的文本判定键（不含时长）：规范化歌名 + 排序后的规范化歌手集合。
+
+    时长在比较时单独判断（见 is_same_song），因为一条键里塞不下"范围"。
+    歌名或歌手为空 → 返回空串（调用方据此跳过合并，宁可重复也不要错误合并）。
+    """
+    name = _normalize_text(title)
+    if not name:
+        return ""
+    names = _artist_names(artists)
+    if not names:
+        return ""
+    return name + "\x00" + "|".join(names)
+
+
+def _dur_seconds(value: Any) -> float | None:
+    """时长统一成秒：库里存的是毫秒（duration_ms），调用方也可能传秒。"""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number <= 0:
+        return None
+    return number / 1000.0 if number > 1000 else number
+
+
+def is_same_song(title_a: Any, artists_a: Any, duration_a: Any,
+                 title_b: Any, artists_b: Any, duration_b: Any,
+                 tolerance: float | None = None) -> bool:
+    """两首 Spotify 曲目是否**同一首歌**：同名 + 同歌手 + 时长差在容差内。
+
+    时长单位统一成秒再比较 —— 库里是毫秒，调用方偶尔传秒，
+    以前直接相减会把 297090(ms) 和 297127(ms) 算成"差 37 秒"。
+    任一侧时长为空 → 只要文本键相同就认为同一首（拿不到时长时没有更好的依据）。
+    专辑不参与判断：EP 版和 Album 版视为同一首。
+    """
+    key_a = canonical_key(title_a, artists_a)
+    key_b = canonical_key(title_b, artists_b)
+    if not key_a or key_a != key_b:
+        return False
+    tol = SAME_SONG_TOLERANCE_S if tolerance is None else float(tolerance)
+    da = _dur_seconds(duration_a)
+    db = _dur_seconds(duration_b)
+    if da is None or db is None:
+        return True
+    return abs(da - db) <= tol
+
+
+def _ready_score(conn: sqlite3.Connection, row: sqlite3.Row) -> tuple:
+    """主记录排序键（越大越好）。
+
+    优先级：**真正可播放（有 vocals + accompaniment 两个成品）** > 有分离产物 >
+    状态靠后（separated 优先于 downloaded） > 有音频 > id 小。
+
+    为什么必须是"真正可播放"排第一：曾经把状态 downloaded（只下载了原始 WAV、
+    还没分离）的记录选成主记录，前端按主记录判断能不能播 → 判定不可播 →
+    又触发一次下载；而组里其实有一条已分离好的记录。主记录选错会让整组都"不可播"。
+    """
+    try:
+        row_ready = conn.execute(
+            "SELECT (s.vocals_path IS NOT NULL AND s.vocals_path <> '' "
+            "AND s.no_vocals_path IS NOT NULL AND s.no_vocals_path <> '') AS ok "
+            "FROM stems s WHERE s.track_id = ? ORDER BY s.id DESC LIMIT 1", (row["id"],)
+        ).fetchone()
+    except sqlite3.Error:
+        row_ready = None
+    playable = 1 if (row_ready and row_ready["ok"]) else 0
+    try:
+        stems = conn.execute("SELECT COUNT(*) AS n FROM stems s WHERE s.track_id = ?", (row["id"],)).fetchone()["n"]
+    except sqlite3.Error:
+        stems = 0
+    status = str(row["status"] or "")
+    status_rank = {"separated": 3, "separating": 2, "downloaded": 1}.get(status, 0)
+    has_audio = 1 if row["audio_path"] else 0
+    return (playable, 1 if stems else 0, status_rank, has_audio, -int(row["id"]))
+
+
+def same_song_members(conn: sqlite3.Connection, title: Any, artists: Any,
+                      duration_ms: Any = None) -> list[sqlite3.Row]:
+    """找出曲库里和给定 Spotify 曲目"同一首歌"的所有记录（含主记录）。
+
+    先按文本键取候选，再用时长容差过滤（EP 版 / 专辑版时长接近 → 同一首）。
+    """
+    key = canonical_key(title, artists)
+    if not key:
+        return []
+    try:
+        rows = conn.execute(
+            "SELECT * FROM tracks WHERE canonical_key = ?", (key,)
+        ).fetchall()
+    except sqlite3.Error:
+        rows = []
+    target = _dur_seconds(duration_ms)
+    if target is None:
+        return list(rows)
+    kept = []
+    for row in rows:
+        other = _dur_seconds(row["duration_ms"])
+        if other is None or abs(other - target) <= SAME_SONG_TOLERANCE_S:
+            kept.append(row)
+    return kept
+
+
+def find_same_song(conn: sqlite3.Connection, title: Any, artists: Any,
+                   duration_ms: Any = None,
+                   exclude_spotify_id: str | None = None) -> sqlite3.Row | None:
+    """在曲库里找"同一首歌"里最合适的记录（同名 + 同歌手 + 时长接近）。
+
+    返回最适合当作主记录的那一行，没有就返回 None。只查数据库，不做文件操作。
+    """
+    rows = same_song_members(conn, title, artists, duration_ms)
+    rows = [r for r in rows if str(r["spotify_id"]) != str(exclude_spotify_id or "")]
+    if not rows:
+        return None
+    rows.sort(key=lambda r: _ready_score(conn, r), reverse=True)
+    return rows[0]
+
+
+def find_same_song(conn: sqlite3.Connection, title: Any, artists: Any,
+                   exclude_spotify_id: str | None = None) -> sqlite3.Row | None:
+    """在曲库里找"同一首歌"（歌名 + 歌手完全一致）里最合适的记录。
+
+    返回主记录所在的整组里**最适合当作主记录**的那一行（sqlite3.Row），没有就返回 None。
+    只查数据库，不做任何文件操作。
+    """
+    key = canonical_key(title, artists)
+    if not key:
+        return None
+    try:
+        rows = conn.execute(
+            "SELECT * FROM tracks WHERE canonical_key IS NOT NULL AND canonical_key = ?",
+            (key,),
+        ).fetchall()
+    except sqlite3.Error:
+        return None
+    rows = [r for r in rows if str(r["spotify_id"]) != str(exclude_spotify_id or "")]
+    if not rows:
+        return None
+    rows.sort(key=lambda r: _ready_score(conn, r), reverse=True)
+    return rows[0]
+
+
+def ensure_canonical(conn: sqlite3.Connection, spotify_id: str) -> str | None:
+    """给一首歌确定 canonical_id（幂等，每次调用都会重新归组）。
+
+    返回当前记录的 canonical_id（通常是主记录的 spotify_id）。
+    """
+    row = conn.execute(
+        "SELECT * FROM tracks WHERE spotify_id = ?", (spotify_id,)
+    ).fetchone()
+    if row is None:
+        return None
+    key = canonical_key(row["title"], row["artists"])
+    if not key:
+        return None
+    if not row["canonical_key"]:
+        conn.execute("UPDATE tracks SET canonical_key = ? WHERE id = ?", (key, row["id"]))
+        conn.commit()
+    # 统一交给 regroup_same_songs：它会按时长聚簇、沿用已有主记录、并把整组指向主记录。
+    # 以前这里只在 canonical_id 为空时才动手，导致"任务跑完后新建的记录"永远不归组。
+    regroup_same_songs(conn)
+    current = conn.execute(
+        "SELECT canonical_id FROM tracks WHERE spotify_id = ?", (spotify_id,)
+    ).fetchone()
+    return str((current["canonical_id"] if current else None) or spotify_id)
+
+
+def find_primary(conn: sqlite3.Connection, spotify_id: str) -> dict[str, Any] | None:
+    """返回这首歌"真正存放文件的那条记录"（主记录）。没有合并关系时就是它自己。"""
+    row = conn.execute(
+        "SELECT * FROM tracks WHERE spotify_id = ?", (spotify_id,)
+    ).fetchone()
+    if row is None:
+        return None
+    canonical = row["canonical_id"] or row["spotify_id"]
+    if canonical == row["spotify_id"]:
+        return _track_dict(row)
+    try:
+        primary = conn.execute(
+            "SELECT * FROM tracks WHERE spotify_id = ?", (canonical,)
+        ).fetchone()
+    except sqlite3.Error:
+        primary = None
+    return _track_dict(primary or row)
+
+
 # ---------------------------------------------------------------- tracks
 def upsert_track(conn: sqlite3.Connection, meta: dict[str, Any]) -> int:
     """插入或更新 Spotify 曲目元数据（按 spotify_id 幂等）；返回内部 id。"""
@@ -190,8 +542,8 @@ def upsert_track(conn: sqlite3.Connection, meta: dict[str, Any]) -> int:
         """
         INSERT INTO tracks (spotify_id, title, artists, album, album_art, album_art_path, album_id,
                             release_date, track_number, disc_number, explicit, popularity,
-                            duration_ms, uri, isrc)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            duration_ms, uri, isrc, canonical_key)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(spotify_id) DO UPDATE SET
             title=excluded.title,
             artists=excluded.artists,
@@ -207,6 +559,11 @@ def upsert_track(conn: sqlite3.Connection, meta: dict[str, Any]) -> int:
             duration_ms=COALESCE(excluded.duration_ms, tracks.duration_ms),
             uri=COALESCE(excluded.uri, tracks.uri),
             isrc=COALESCE(excluded.isrc, tracks.isrc),
+            -- 歌名/歌手可能变了（Spotify 改名）：键要跟着变，否则会卡在旧分组里
+            canonical_key=CASE
+                WHEN tracks.canonical_key IS NULL OR tracks.canonical_key = ''
+                  OR tracks.title <> excluded.title OR tracks.artists <> excluded.artists
+                THEN excluded.canonical_key ELSE tracks.canonical_key END,
             updated_at=?
         """,
         (
@@ -225,11 +582,18 @@ def upsert_track(conn: sqlite3.Connection, meta: dict[str, Any]) -> int:
             meta.get("duration_ms"),
             meta.get("uri"),
             meta.get("isrc"),
+            canonical_key(meta["title"], artists),
             now(),
         ),
     )
     conn.commit()
     row = conn.execute("SELECT id FROM tracks WHERE spotify_id = ?", (meta["spotify_id"],)).fetchone()
+    # 新记录一建出来就归组：这样它从一开始就和"同一首歌"的其他版本共用成品，
+    # 不会出现"任务跑完了还是一条独立记录"的情况（列表里就不会多出一首）。
+    try:
+        regroup_same_songs(conn)
+    except sqlite3.Error as error_:  # noqa: BLE001
+        print(f"[library] 新记录归组失败（忽略，下次启动会补）：{error_}")
     return int(row["id"])
 
 
@@ -270,6 +634,12 @@ def set_status(conn: sqlite3.Connection, track_id: int, status: str, error: str 
         (status, error, now(), track_id),
     )
     conn.commit()
+    # 这条记录可能刚被建成"另一张专辑的同名歌"，状态一变就重新归组一次，
+    # 否则它会一直自成一个 canonical 组，列表里就多出一首重复的歌。
+    try:
+        regroup_same_songs(conn)
+    except sqlite3.Error as error_:  # noqa: BLE001
+        print(f"[library] 重新分组失败（忽略，下次启动会补）：{error_}")
 
 
 def mark_failed(conn: sqlite3.Connection, track_id: int, error: str) -> None:
@@ -279,6 +649,10 @@ def mark_failed(conn: sqlite3.Connection, track_id: int, error: str) -> None:
         (str(error)[:2000], now(), track_id),
     )
     conn.commit()
+    try:
+        regroup_same_songs(conn)
+    except sqlite3.Error:  # noqa: BLE001
+        pass
 
 
 def update_source(
@@ -324,9 +698,10 @@ def update_audio(
 #                                         → manually_confirmed（管理员确认/手填）
 #                                         → not_found（没找到合适的）
 #                                         → unavailable（视频不可用/不允许嵌入）
-VISUAL_STATUSES = {"pending", "auto_matched", "manually_confirmed", "not_found", "unavailable"}
+#                                         → cover_only（管理员主动选择「用模糊封面」，不播 MV）
+VISUAL_STATUSES = {"pending", "auto_matched", "manually_confirmed", "not_found", "unavailable", "cover_only"}
 # 这些状态代表"管理员已经明确拍板"：自动匹配不允许覆盖它们。
-VISUAL_LOCKED_STATUSES = {"manually_confirmed"}
+VISUAL_LOCKED_STATUSES = {"manually_confirmed", "cover_only"}
 # 这些状态下已有可用的 visual_video_id，播放时直接复用，不再调 YouTube 搜索。
 VISUAL_REUSABLE_STATUSES = {"auto_matched", "manually_confirmed"}
 

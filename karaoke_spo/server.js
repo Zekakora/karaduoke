@@ -159,7 +159,7 @@ function loadState() {
   } catch {
     // 文件不存在 = 首次启动，建默认值
     const state = defaultState();
-    writeStateAtomic(state);
+    try { writeStateAtomic(state); } catch (err) { console.error(`[state] 初始状态写入失败（继续启动）：${err.code || err.message}`); }
     return state;
   }
   try {
@@ -176,7 +176,7 @@ function loadState() {
       console.error(`[state] state.json 解析失败（${err.message}），且备份失败`);
     }
     const state = defaultState();
-    writeStateAtomic(state);
+    try { writeStateAtomic(state); } catch (err2) { console.error(`[state] 默认状态写入失败（继续启动）：${err2.code || err2.message}`); }
     return state;
   }
 }
@@ -188,15 +188,32 @@ function loadState() {
  */
 function writeStateAtomic(payload) {
   const tmp = `${STATE_FILE}.tmp-${process.pid}`;
-  const fd = fs.openSync(tmp, 'w');
+  const text = JSON.stringify(payload, null, 2);
+  let fd;
   try {
-    fs.writeFileSync(fd, JSON.stringify(payload, null, 2), 'utf8');
-    fs.fsyncSync(fd);
+    fd = fs.openSync(tmp, 'w');
+    fs.writeFileSync(fd, text, 'utf8');
+    try {
+      fs.fsyncSync(fd);
+    } catch (err) {
+      // 磁盘/杀毒软件偶发 fsync 失败：数据已经写进操作系统缓存，
+      // 后面的 rename 通常仍能成功。不能因为一次 fsync 失败就让整个请求 500、
+      // 甚至让服务退出；这里只记录（30s 内只报一次），状态丢失风险由日志暴露。
+      const now = Date.now();
+      if (now - lastStateFsyncWarnAt > 30000) {
+        lastStateFsyncWarnAt = now;
+        console.error(`[state] fsync 失败（${err.code || err.message}）：状态可能没有真正落盘`);
+      }
+    }
   } finally {
-    fs.closeSync(fd);
+    if (fd !== undefined) {
+      try { fs.closeSync(fd); } catch { /* ignore */ }
+    }
   }
   fs.renameSync(tmp, STATE_FILE);
 }
+
+let lastStateFsyncWarnAt = 0;
 
 const state = loadState();
 state.importantBroadcast ??= null;
@@ -376,7 +393,13 @@ function isLoopback(req) {
 }
 
 function persist() {
-  writeStateAtomic(state);
+  // state 是内存里的权威状态；落盘失败只影响重启恢复，不能让当前请求失败。
+  // 磁盘故障（fsync/rename 报 UNKNOWN）时服务必须继续活着，否则大屏/点歌全挂。
+  try {
+    writeStateAtomic(state);
+  } catch (err) {
+    console.error(`[state] 保存失败（服务继续运行）：${err.code || err.message}`);
+  }
 }
 
 /**
@@ -401,14 +424,27 @@ function pendingSongs() {
   return queueOrder.pendingSongs(state.songs);
 }
 
+/** 已经结束、不该再当作"当前歌"的队列状态。 */
+const TERMINAL_SONG_STATUSES = ['removed', 'skipped', 'played', 'failed'];
+
 function currentSong() {
-  return state.songs.find(song => song.id === state.playback.currentRequestId) || null;
+  const song = state.songs.find(item => item.id === state.playback.currentRequestId) || null;
+  // 被删除/已跳过/已播完的歌不能继续当 current：否则大屏会一直停在这首歌上
+  // （「准备中…」「播放中」）而队列里其实已经没有它了。
+  if (!song || TERMINAL_SONG_STATUSES.includes(song.status)) return null;
+  return song;
 }
 
 function normalizeQueue() {
   // 含 preparing / prepare_failed：制作中的歌也要稳定占住队列位置，
   // 否则下一次归一 queued 的 queuePosition 后，新歌会排到它前面去。
   queueOrder.normalizePositions(state.songs);
+  // 当前歌被删/被移出队列后，playback.status 可能还停在 playing/paused，
+  // 大屏就会显示「播放中」却没有歌可播。没有 current 时统一回落到 idle。
+  if (state.playback.currentRequestId && !currentSong()) state.playback.currentRequestId = null;
+  if (!state.playback.currentRequestId && !state.importantBroadcast && ['playing', 'transition', 'paused'].includes(state.playback.status)) {
+    state.playback.status = 'idle';
+  }
 }
 
 function publicState() {
@@ -443,6 +479,27 @@ function publicState() {
 }
 
 /**
+ * 曲库里的 MV 记录 → 播放时能用的 videoId（不能播就返回 null）。
+ *
+ * 什么状态算"能用"：
+ *   auto_matched      高置信度，直接用
+ *   manually_confirmed 管理员确认过，直接用
+ *   pending           低置信度但确实是当前最优候选 —— **也用**。
+ *                     以前这里只认前两种，于是新歌只要落在 pending（分数 25~59，
+ *                     新歌里非常常见）就永远没有 MV，看起来就是"第一次播放没 MV"。
+ *                     曲库/大屏会显示「待确认」徽章，DJ 看到不对可以随时换。
+ *   not_found / unavailable  不用（没找到 / 这个视频播放失败过）
+ */
+function visualIdForPlayback(visual) {
+  if (!visual || !visual.visualVideoId) return null;
+  const status = visual.visualMatchStatus || 'pending';
+  if (status === 'not_found' || status === 'unavailable') return null;
+  // 管理员主动选了「用模糊封面」→ 就算库里还残留 id 也不播
+  if (status === 'cover_only') return null;
+  return visual.visualVideoId;
+}
+
+/**
  * 队列项要用的官方 MV videoId：**以曲库为准**。
  *
  * 队列项自己不带这个字段（它是播放态数据，不是曲库数据），
@@ -455,10 +512,7 @@ function resolveQueueVisualId(song) {
   if (cached !== undefined) return cached || null;   // 已缓存（包括 null 表示确实没有）
   let next = null;
   try {
-    const visual = libraryDb.getVisual(song.spotifyId);
-    if (visual && visual.visualVideoId && ['auto_matched', 'manually_confirmed'].includes(visual.visualMatchStatus)) {
-      next = visual.visualVideoId;
-    }
+    next = visualIdForPlayback(libraryDb.getVisual(song.spotifyId));
   } catch { /* 曲库不可用就当没有 MV */ }
   song.visualVideoId = next;
   return next;
@@ -491,6 +545,10 @@ function publicSong(song) {
     // 这里以曲库为准（一次索引查询，很便宜），并把结果写回队列项缓存。
     visualVideoId: song.source === 'local' ? resolveQueueVisualId(song) : null
   };
+  // 这首歌是不是复用了曲库里同一首歌的另一版（EP 版 ↔ 专辑版）：
+  // 排查"为什么没重新下载"时能直接从接口看出来。
+  if (song.reusedFrom) out.reusedFrom = song.reusedFrom;
+  if (song.reusedSpotifyId) out.reusedSpotifyId = song.reusedSpotifyId;
   // 制作状态：用户侧只看粗粒度（准备中/已就绪/准备失败），
   // 百分比与阶段只给 DJ 控制台用（adminState 里带完整 progress）。
   if (song.source === 'local' && (song.status === 'preparing' || song.status === 'prepare_failed')) {
@@ -593,6 +651,8 @@ function queueSongsNeedingMv() {
     const visual = libraryDb.getVisual(song.spotifyId);
     if (!visual) { out.push(song.spotifyId); continue; }
     if (visual.visualVideoId && ['auto_matched', 'manually_confirmed'].includes(visual.visualMatchStatus)) continue;
+    // 管理员明确选了「用模糊封面」→ 不要再自动搜（否则等于把他的手选结果冲掉）
+    if (visual.visualMatchStatus === 'cover_only') continue;
     // 已经搜过且有结论（含 not_found / 未达阈值）→ 不自动重搜；管理员点「重新搜索」才会再来
     if (visual.visualMatchedAt && ['not_found', 'pending', 'unavailable'].includes(visual.visualMatchStatus)) continue;
     out.push(song.spotifyId);
@@ -761,16 +821,20 @@ function invalidateQueueVisualIds(spotifyId) {
   }
 }
 
-/** 队列项里的 visualVideoId 以曲库为准刷新（管理员改完 MV，不用等下次点歌就生效） */
+/**
+ * 队列项里的 visualVideoId 以曲库为准刷新（管理员改完 MV，不用等下次点歌就生效）。
+ * @returns {boolean} 有没有真的改动（决定要不要额外广播）
+ */
 function refreshQueueVisualIds() {
+  let changed = false;
   for (const song of state.songs) {
     if (song.source !== 'local' || !song.spotifyId) continue;
     if (!['preparing', 'queued', 'playing', 'transition'].includes(song.status)) continue;
     if (!libraryDb.getVisualRow(song.spotifyId)) continue;
-    const visual = libraryDb.getVisual(song.spotifyId);
-    const next = visual && ['auto_matched', 'manually_confirmed'].includes(visual.visualMatchStatus) ? visual.visualVideoId : null;
-    if (song.visualVideoId !== next) song.visualVideoId = next;
+    const next = visualIdForPlayback(libraryDb.getVisual(song.spotifyId));
+    if (song.visualVideoId !== next) { song.visualVideoId = next; changed = true; }
   }
+  return changed;
 }
 
 /** 后台任务状态 → 队列项 status/progress。只动 source==='local' 的未播放项。 */
@@ -795,7 +859,10 @@ function applyPrepareJobsToQueue() {
     song.prepareStage = job.stage || null;
     // 官方 MV（visualVideoId）是并行阶段：把结果带到队列项上，大屏切歌时立刻可用
     song.visualVideoId = job.mv?.visualVideoId || song.visualVideoId || null;
-    if (job.status === 'ready') {
+    // 内存里的任务状态可能落后于曲库（进程重启/任务文件被重置/合并后换成主记录）：
+    // 只要曲库里这首歌真的可播，就直接放行，绝不让它一直停在"处理中"。
+    const libraryReady = isLocalTrackReadyForPlayback(song.spotifyId);
+    if (job.status === 'ready' || (libraryReady && job.status !== 'failed')) {
       // 制作完成 → 变成普通等待队列项，可以播放
       if (song.status !== 'queued') {
         song.status = 'queued';
@@ -824,6 +891,34 @@ function isLocalTrackReadyForPlayback(spotifyId) {
   return Boolean(track && track.ready);
 }
 
+/**
+ * 同一首歌（canonical 组）里已经在排队/运行中的制作任务。
+ *
+ * EP 版和专辑版在 Spotify 是两个 track_id，进曲库也是两行，但成品只该做一份。
+ * 点歌映射到主记录后通常只剩一个任务；这里再兜一层：组里已经有任务在跑就直接贴着它，
+ * 绝不给同一个作品开第二个下载/分离。
+ */
+function findActivePrepareJobInGroup(spotifyId) {
+  let target = spotifyId;
+  try { target = libraryDb.getPrimaryTrackId(spotifyId) || spotifyId; } catch { /* ignore */ }
+  let jobs = [];
+  try { jobs = prepareQueue.list(); } catch { return null; }
+  for (const job of jobs) {
+    if (!job || (job.status !== 'queued' && job.status !== 'running')) continue;
+    let primary = job.spotifyId;
+    try { primary = libraryDb.getPrimaryTrackId(job.spotifyId) || job.spotifyId; } catch { /* ignore */ }
+    if (primary === target) return job;
+  }
+  return null;
+}
+
+/** 入队后台制作：同一首歌已有任务在跑就复用，避免同一作品重复下载。 */
+function enqueuePrepare(spotifyId, title, songId) {
+  const active = findActivePrepareJobInGroup(spotifyId);
+  if (active) return { job: active, created: false };
+  return prepareQueue.enqueue({ spotifyId, title, songId });
+}
+
 function mutate(fn) {
   const result = fn();
   state.playback.version += 1;
@@ -849,7 +944,40 @@ function startNext() {
   next.status = 'playing';
   state.playback.currentRequestId = next.id;
   state.playback.status = 'transition';
+  // 本地曲目开播这一刻顺手补一次官方 MV 匹配。
+  // 以前只有"制作任务变化"（syncPrepareState）才会触发 MV 匹配，
+  // 于是一首正在播、但曲库里还没有 MV 结论的歌永远不会被匹配 ——
+  // 大屏只能一直显示模糊封面，直到管理员手动点「一键匹配」。
+  if (next.source === 'local' && next.spotifyId) {
+    try { maybeStartMvResolve(); } catch (err) { console.warn(`[mv] 开播触发匹配失败：${err.message}`); }
+  }
   return next;
+}
+
+/**
+ * MV 兜底巡检（每 5 秒）。
+ *
+ * 为什么需要：MV 匹配是异步的，而队列项上的 visualVideoId 是**缓存**。
+ * 首播时可能出现"匹配还没写库 → 队列项缓存到 null → 之后再也没人刷新"的死角，
+ * 大屏就一直是模糊封面（实测过：DB 里后来已经是 auto_matched，队列项还是 null）。
+ * 这里周期性地：曲库有结论就刷回队列项；还没结论就去匹配。
+ */
+const MV_SWEEP_MS = 5000;
+function startMvSweep() {
+  const timer = setInterval(() => {
+    try {
+      let changed = false;
+      try { changed = refreshQueueVisualIds(); } catch { /* ignore */ }
+      let needsMatch = false;
+      try { needsMatch = queueSongsNeedingMv().length > 0; } catch { /* ignore */ }
+      if (needsMatch) maybeStartMvResolve();
+      if (changed) broadcast();
+    } catch (err) {
+      console.warn(`[mv] 巡检失败：${err.message}`);
+    }
+  }, MV_SWEEP_MS);
+  timer.unref?.();
+  return timer;
 }
 
 function finishCurrent(status, errorMessage) {
@@ -1460,17 +1588,30 @@ async function handleApi(req, res, url) {
           out.jobStatus = job.status;
         }
         // 成品 2 个 mp3 的总大小
+        let outputsMissing = false;
         try {
           const dir = path.join(OUT_DIR, track.spotifyId);
           if (fs.existsSync(dir)) {
             let bytes = 0;
+            let present = 0;
             for (const name of ['accompaniment.mp3', 'vocals.mp3']) {
               const p = path.join(dir, name);
-              if (fs.existsSync(p)) bytes += fs.statSync(p).size;
+              if (fs.existsSync(p)) { present += 1; bytes += fs.statSync(p).size; }
             }
             out.outputBytes = bytes || null;
+            // DB 里标记已分离、但成品文件不全 = 异常退出/掉盘导致的失效任务
+            outputsMissing = track.status === 'separated' && present < 2;
+          } else {
+            outputsMissing = track.status === 'separated';
           }
         } catch { /* ignore */ }
+        out.outputsMissing = outputsMissing;
+        if (outputsMissing) {
+          out.status = 'failed';
+          out.statusText = (data.statusText && data.statusText.failed) || '处理失败';
+          out.ready = false;
+          out.error = out.error || '曲库记录显示已处理，但成品文件缺失（可能是异常退出或磁盘故障），可重试重新生成';
+        }
         // 歌词来源以**实际生效的**为准：
         // DB 里是流水线自动抓的结果，DJ 手动「改词重搜」写在覆盖表里。
         // 不合并的话，重搜成功过 library 仍显示 lrclib，看着像没生效。
@@ -1682,12 +1823,41 @@ async function handleApi(req, res, url) {
         try { refreshQueueVisualIds(); broadcast(); } catch { /* ignore */ }
         return sendJson(res, 200, { ok: true, action, ...result.visual });
       }
+      if (action === 'cover') {
+        // 明确的「用模糊封面」：不播 MV，且自动匹配不再补回来（cleared 只是回到"未定"）
+        const result = officialMv.chooseCover(spotifyId);
+        if (!result.ok) return sendError(res, 400, '保存失败', result.reason);
+        invalidateQueueVisualIds(spotifyId);
+        try { refreshQueueVisualIds(); broadcast(); } catch { /* ignore */ }
+        return sendJson(res, 200, { ok: true, action, ...result.visual });
+      }
       return sendError(res, 400, '不支持的操作', 'BAD_ACTION');
     } catch (error) {
       // 搜索失败（没有 Key / 配额）：如实返回，不写入任何状态
       return sendError(res, 502, error.message || 'MV 搜索失败', error.code || 'MV_SEARCH_FAILED');
     }
   }
+  // 重试失败 / 失效的曲目：重新入后台制作队列。
+  // pipeline 是幂等的：已有音频/歌词/分离结果会跳过，缺哪步补哪步；
+  // step_separate 也会检查 4 轨文件是否真的存在，缺了就重新分离。
+  const libraryRetryMatch = pathname.match(/^\/api\/library\/admin\/tracks\/([^/]+)\/retry$/);
+  if (method === 'POST' && libraryRetryMatch) {
+    if (!isAdmin(req)) return sendError(res, 401, '需要 DJ 权限', 'ADMIN_REQUIRED');
+    const spotifyId = decodeURIComponent(libraryRetryMatch[1]);
+    if (!/^[A-Za-z0-9]{22}$/.test(spotifyId)) return sendError(res, 400, 'spotifyId 不合法', 'BAD_SPOTIFY_ID');
+    const track = libraryDb.getTrack(spotifyId);
+    if (!track) return sendError(res, 404, '曲库里没有这首歌', 'TRACK_NOT_FOUND');
+    const current = prepareQueue.getStatus(spotifyId);
+    if (current && ['queued', 'running'].includes(current.status)) {
+      return sendJson(res, 200, { ok: true, already: true, job: current });
+    }
+    // 曲库里已经可播（含同一首歌的另一版）就没必要重新下载/分离了
+    if (track.ready) return sendJson(res, 200, { ok: true, already: true, ready: true });
+    const { job } = enqueuePrepare(spotifyId, track.title);
+    try { schedulePrepareSync(); } catch { /* ignore */ }
+    return sendJson(res, 200, { ok: true, created: true, job });
+  }
+
   // 从曲库删除一首歌（DB 记录 + 成品/封面/歌词/原始 WAV）。
   // 前端一直是 DELETE /api/library/admin/tracks/:id，但服务端以前没有这个路由，
   // 所以才会提示「接口不存在」。
@@ -1890,6 +2060,16 @@ async function handleApi(req, res, url) {
       const { tracks } = await spotify.search(q, limit);
       const items = (tracks || []).map((track) => {
         const local = libraryDb.getTrack(track.id);
+        // 同一首歌：EP 版 / 专辑版在 Spotify 里是不同 track_id，但曲库里可能已经处理过。
+        // 按"同歌手 + 同歌名 + 时长接近"找已有的那条，命中就直接用，不再重新下载/分离。
+        const sameSong = libraryDb.findExistingSong({
+          title: track.name,
+          artists: track.artists || [],
+          durationMs: track.durationMs || null,
+        });
+        const reusable = sameSong && sameSong.ready ? sameSong : null;
+        // 点歌时应该用哪个 spotifyId：库里已有同一首 → 直接用主记录，避免重复处理
+        const playbackSpotifyId = (local && local.canonicalId) || (reusable && reusable.spotifyId) || track.id;
         return {
           spotifyId: track.id,
           title: track.name,
@@ -1897,10 +2077,13 @@ async function handleApi(req, res, url) {
           album: track.album || null,
           durationMs: track.durationMs || null,
           cover: track.coverUrl || null,
-          localCover: (local && local.cover) || null,
+          localCover: (local && local.cover) || (reusable && reusable.cover) || null,
           popularity: track.popularity,
           inLibrary: Boolean(local),
-          ready: Boolean(local && local.ready),
+          ready: Boolean(local && local.ready) || Boolean(reusable),
+          playbackSpotifyId,
+          reusedTitle: reusable && reusable.spotifyId !== track.id ? reusable.title : null,
+          reusedAlbum: reusable && reusable.spotifyId !== track.id ? reusable.album : null,
           source: 'spotify',
         };
       });
@@ -2118,6 +2301,38 @@ async function handleApi(req, res, url) {
     }
     const matchedKeyword = matchedBlacklistKeyword(title);
     if (matchedKeyword) return sendError(res, 400, `视频标题含黑名单关键字“${matchedKeyword}”`, 'SONG_BLACKLISTED', { keyword: matchedKeyword });
+    // ---- 同一首歌：点歌这一刻就决定用曲库里已有的那条 ----
+    // 用户点的是 Spotify 的某个 track_id（可能是 EP 版 / 专辑版 / 精选集版），
+    // 只要曲库里已有"同一歌手 + 同一歌名 + 时长接近"的歌，就直接复用那条的成品，
+    // 不再下载、不再分离；进队列的也是那条的 spotifyId，队列去重和播放都自然对齐。
+    let spotifyId = source === 'local' ? String(body.spotifyId || '') : null;
+    let reused = null;
+    const requestedTrack = source === 'local' && spotifyId ? libraryDb.getTrack(spotifyId) : null;
+    // 不管这首本身是否 ready，都要再找一次"同一首歌"：
+    //   * 未就绪 → 用库里同名的另一版，避免重新下载；
+    //   * 已就绪但不是主记录 → 也换成主记录，让队列/缓存的 key 统一，
+    //     否则同一首歌的不同 track_id 在队列里会被当成两首（各自排队、各自算配额）。
+    if (source === 'local' && spotifyId) {
+      const sameSong = libraryDb.findExistingSong({
+        title,
+        artists: Array.isArray(body.artists) && body.artists.length
+          ? body.artists
+          : (requestedTrack && requestedTrack.artists) || [],
+        durationMs: body.durationMs || (requestedTrack && requestedTrack.durationMs) || null,
+      });
+      // 命中同一首歌就换成库里已有的那条：ready 的直接播，没 ready 的也只制作这一个记录，
+      // 不再为 EP 版 / 专辑版各下载一遍。
+      if (sameSong && sameSong.spotifyId !== spotifyId) {
+        reused = {
+          spotifyId: sameSong.spotifyId,
+          title: sameSong.title,
+          album: sameSong.album || null,
+          ready: Boolean(sameSong.ready),
+        };
+        console.log(`[library] 点歌复用已有曲目：${spotifyId} → ${sameSong.spotifyId}（${sameSong.title}${sameSong.ready ? '，已就绪' : '，制作中'}）`);
+        spotifyId = sameSong.spotifyId;
+      }
+    }
     // 配额要把「准备中」也算进去：本地曲目点下去先进入 preparing（后台下载/分离），
     // 以前只数 queued，用户会看到"明明只点了一首却说达到上限"，
     // 而且准备中的歌可以无限连点，绕过每人上限。
@@ -2127,26 +2342,28 @@ async function handleApi(req, res, url) {
     // 去重必须用 songKey：本地曲目的 videoId 是 null，直接比 videoId 会让
     // "null === null" 把所有本地歌都判成重复（只剩第一首能点）。
     // 「还在制作中」的项也算重复，否则用户连点两次会堆出两条一样的歌。
-    const key = songKey({ source, videoId: body.videoId, spotifyId: body.spotifyId });
+    const key = songKey({ source, videoId: body.videoId, spotifyId });
     // 去重也覆盖 prepare_failed：制作失败的歌还在队列里占位，用户重新点同一首
     // 会被判定为"已经点过"并给出可操作的提示（而不是堆出两条失败项）。
     const activeStatuses = ['queued', 'preparing', 'prepare_failed'];
     if (!state.settings.allowDuplicatePerSession && state.songs.some(song => song.sessionId === session.id && songKey(song) === key && activeStatuses.includes(song.status))) return sendError(res, 409, '你已经点过这首歌', 'DUPLICATE_SESSION_SONG');
     if (!state.settings.allowDuplicateVideo && state.songs.some(song => songKey(song) === key && activeStatuses.includes(song.status))) return sendError(res, 409, '这首歌已经在等待队列中', 'DUPLICATE_VIDEO');
     // 本地曲目要判定「能不能立刻播」：
-    //   曲库已 ready → 直接进等待队列（原行为）
+    //   曲库已 ready（或同名的另一版已 ready）→ 直接进等待队列
     //   曲库里没有 / 未就绪 → 进后台制作（status='preparing'），点歌仍然成功（201）
-    const needsPrepare = source === 'local' && !isLocalTrackReadyForPlayback(body.spotifyId);
+    const needsPrepare = source === 'local' && !isLocalTrackReadyForPlayback(spotifyId);
     const song = {
       id: id('song'), roomId: 'main', source,
       videoId: source === 'youtube' ? String(body.videoId) : null,
-      spotifyId: source === 'local' ? String(body.spotifyId) : null,
+      spotifyId,
       title,
       channelTitle: String(body.channelTitle || (source === 'local' ? '本地曲库' : 'YouTube')).slice(0, 100),
       thumbnailUrl: String(body.thumbnailUrl || ''),
       duration: String(body.duration || '—'), sessionId: session.id, singerNameSnapshot: session.displayName,
       status: needsPrepare ? 'preparing' : 'queued',
       isPinned: false,
+      // 复用了库里已处理过的同一首（EP 版 ↔ 专辑版）时记下来，便于排查
+      ...(reused ? { reusedFrom: String(body.spotifyId || ''), reusedSpotifyId: reused.spotifyId } : {}),
       // 必须排在所有 active 项（含 preparing）之后。以前用 state.songs.length，
       // 在归一 queued 位置后可能比制作中的歌还小，新歌就插到它前面了。
       queuePosition: queueOrder.nextQueuePosition(state.songs),
@@ -2163,7 +2380,7 @@ async function handleApi(req, res, url) {
     });
     let prepareJob = null;
     if (needsPrepare) {
-      const { job } = prepareQueue.enqueue({ spotifyId: song.spotifyId, title, songId: song.id });
+      const { job } = enqueuePrepare(song.spotifyId, title, song.id);
       prepareJob = job;
       song.progress = { stage: job.progress?.stage || 'queued', percent: job.progress?.percent || 0 };
       syncPrepareState();
@@ -2509,9 +2726,20 @@ function serveMedia(req, res, url) {
   let rel = decodeURIComponent(url.pathname.replace(/^\/media\//, ''));
   // 只允许这三棵子树
   if (!/^(output|lyrics|covers)\//.test(rel)) return sendError(res, 404, '资源不存在', 'NOT_FOUND');
-  const filePath = path.resolve(MEDIA_ROOT, rel);
+  let filePath = path.resolve(MEDIA_ROOT, rel);
   if (!filePath.startsWith(MEDIA_ROOT + path.sep)) return sendError(res, 400, '非法路径', 'BAD_PATH');
-  if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) return sendError(res, 404, '资源不存在', 'NOT_FOUND');
+  if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
+    // 同一首歌（EP 版 / 专辑版）合并后只有主记录真的存文件；从属目录还没补上硬链接时，
+    // 用主记录的同一文件兜底，避免整首歌"没声音 / 没封面"。
+    const m = /^(output\/library|covers|lyrics)\/([A-Za-z0-9]{22})(\/.*|\.\w+)$/.exec(rel);
+    const primary = m ? libraryDb.getPrimaryTrackId(m[2]) : null;
+    const fallback = primary && primary !== m[2] ? path.resolve(MEDIA_ROOT, `${m[1]}/${primary}${m[3]}`) : null;
+    if (fallback && fallback.startsWith(MEDIA_ROOT + path.sep) && fs.existsSync(fallback) && !fs.statSync(fallback).isDirectory()) {
+      filePath = fallback;
+    } else {
+      return sendError(res, 404, '资源不存在', 'NOT_FOUND');
+    }
+  }
 
   const ext = path.extname(filePath).toLowerCase();
   const types = { '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.m4a': 'audio/mp4', '.lrc': 'text/plain; charset=utf-8', '.json': 'application/json; charset=utf-8', '.jpg': 'image/jpeg', '.png': 'image/png' };
@@ -2594,7 +2822,76 @@ function start() {
     console.log(`DJ password: ${ADMIN_PASSWORD === 'karaok-admin' ? 'karaok-admin (default)' : '(from DJ_PASSWORD)'}`);
   });
   restorePrepareJobs();
+  // MV 兜底巡检：曲库有结论就刷回队列项，没结论就去匹配（见 startMvSweep 注释）
+  startMvSweep();
+  // 同一首歌（EP 版 / 专辑版）：把曲库里已有的分组补上硬链接，免得从属目录里没文件。
+  // 放在后台跑，不阻塞启动；失败只记日志（播放端还有 serveMedia 的主记录兜底）。
+  syncSameSongLinks();
   return server;
+}
+
+/**
+ * 同一首歌：给每个合并组里的从属记录补硬链接。
+ *
+ * 从属目录以**自己的 spotifyId** 命名（前端 URL 形状不变），里面的每个文件都是
+ * 指向主记录同名文件的硬链接 —— NTFS 同卷瞬时完成、不额外占空间；跨卷时才退回复制。
+ * 幂等：已经是硬链接且内容一致就跳过。
+ */
+function syncSameSongLinks() {
+  setTimeout(() => {
+    try {
+      const OUT = path.join(MEDIA_ROOT, 'output', 'library');
+      const COVERS = path.join(MEDIA_ROOT, 'covers');
+      const LYRICS = path.join(MEDIA_ROOT, 'lyrics');
+      const conn = libraryDb.open();
+      if (!conn || !libraryDb.hasCanonicalColumns(conn)) return;
+      const rows = conn.prepare(
+        `SELECT spotify_id, canonical_id FROM tracks
+          WHERE canonical_id IS NOT NULL AND canonical_id <> spotify_id`
+      ).all();
+      let linked = 0;
+      let failed = 0;
+      const ensureLink = (source, target) => {
+        try {
+          if (!fs.existsSync(source)) return;
+          const sourceStat = fs.statSync(source);
+          if (fs.existsSync(target)) {
+            const targetStat = fs.statSync(target);
+            if (targetStat.size === sourceStat.size && targetStat.mtimeMs === sourceStat.mtimeMs) return;
+            fs.unlinkSync(target);
+          }
+          fs.mkdirSync(path.dirname(target), { recursive: true });
+          try {
+            fs.linkSync(source, target);
+          } catch {
+            // 跨卷 / 文件系统不支持硬链接 → 退回复制
+            fs.copyFileSync(source, target);
+          }
+          linked += 1;
+        } catch (error) {
+          failed += 1;
+          if (failed <= 3) console.warn(`[same-song] 补链接失败 ${target}：${error.message}`);
+        }
+      };
+      for (const row of rows) {
+        const from = String(row.canonical_id);
+        const to = String(row.spotify_id);
+        const srcDir = path.join(OUT, from);
+        if (fs.existsSync(srcDir)) {
+          for (const name of ['accompaniment.mp3', 'vocals.mp3', 'manifest.json']) {
+            ensureLink(path.join(srcDir, name), path.join(OUT, to, name));
+          }
+        }
+        ensureLink(path.join(COVERS, `${from}.jpg`), path.join(COVERS, `${to}.jpg`));
+        for (const ext of ['.lrc', '.yrc', '.qrc']) {
+          ensureLink(path.join(LYRICS, `${from}${ext}`), path.join(LYRICS, `${to}${ext}`));
+        }
+      }
+      if (linked || failed) console.log(`[same-song] 同一首歌补链接：新建 ${linked} 个，失败 ${failed} 个`);
+    } catch (error) {
+      console.warn(`[same-song] 补链接任务失败：${error.message}`);
+    }
+  }, 1500);
 }
 
 /**
@@ -2615,7 +2912,7 @@ function restorePrepareJobs() {
       song.progress = null;
       continue;
     }
-    prepareQueue.enqueue({ spotifyId: song.spotifyId, title: song.title, songId: song.id });
+    enqueuePrepare(song.spotifyId, song.title, song.id);
     requeued += 1;
   }
   // 丢了队列项、但任务还在跑（用户已删歌）的情况：任务继续，不需要额外处理
@@ -2654,6 +2951,13 @@ function resumeIdleQueueOnBoot() {
         console.log(`[playback] 启动恢复：从队列继续播放「${started.title}」`);
         persist();
       }
+    } else {
+      // 没有 current 也没有待播歌：把残留的 playing/paused 清成 idle，
+      // 否则大屏和 DJ 控制台会一直显示"正在播放"却没有歌（上次删歌/异常退出留下的）。
+      const stale = state.playback.currentRequestId || ['playing', 'transition', 'paused'].includes(state.playback.status);
+      state.playback.currentRequestId = null;
+      if (['playing', 'transition', 'paused'].includes(state.playback.status)) state.playback.status = 'idle';
+      if (stale) persist();
     }
   } catch (error) {
     console.warn(`[playback] 启动恢复失败：${error.message}`);
