@@ -54,11 +54,11 @@ const I18N = {
     'env.refresh': 'Refresh',
     'env.sizeLoading': 'measuring…',
     'env.downloadFfmpeg': 'Download ffmpeg',
-    'env.installPython': 'Create install script',
+    'env.installPython': 'Download Python setup',
     'env.warmModels': 'Preload models',
     'env.warming': 'Loading models…',
     'env.modelsReady': 'Model weights are ready',
-    'env.scriptWritten': 'Created {path} — double-click it to install the Python environment',
+    'env.scriptWritten': 'Created {path} — double-click it. It downloads Python and all dependencies into the env folder (no Python install needed).',
     'env.needService': 'Start the service first',
     'button.copy': 'Copy',
     'button.clear': 'Clear',
@@ -185,11 +185,11 @@ const I18N = {
     'env.refresh': '刷新状态',
     'env.sizeLoading': '统计中…',
     'env.downloadFfmpeg': '下载 ffmpeg',
-    'env.installPython': '生成安装脚本',
+    'env.installPython': '下载 Python 环境',
     'env.warmModels': '预热模型',
     'env.warming': '正在加载模型…',
     'env.modelsReady': '模型权重已就绪',
-    'env.scriptWritten': '已生成 {path}，双击运行即可安装 Python 环境',
+    'env.scriptWritten': '已生成 {path}，双击运行。它会自动下载 Python 和全部依赖到 env 目录，无需预先安装 Python。',
     'env.needService': '请先启动服务',
     'button.copy': '复制',
     'button.clear': '清屏',
@@ -316,11 +316,11 @@ const I18N = {
     'env.refresh': 'Aktualisieren',
     'env.sizeLoading': 'wird gemessen…',
     'env.downloadFfmpeg': 'ffmpeg herunterladen',
-    'env.installPython': 'Installationsskript erzeugen',
+    'env.installPython': 'Python-Umgebung herunterladen',
     'env.warmModels': 'Modelle vorladen',
     'env.warming': 'Modelle werden geladen…',
     'env.modelsReady': 'Modellgewichte sind bereit',
-    'env.scriptWritten': '{path} erstellt — zum Installieren doppelklicken',
+    'env.scriptWritten': '{path} erstellt — doppelklicken. Python und alle Abhängigkeiten werden in den env-Ordner geladen (keine Python-Installation nötig).',
     'env.needService': 'Bitte zuerst den Dienst starten',
     'button.copy': 'Kopieren',
     'button.clear': 'Leeren',
@@ -567,18 +567,36 @@ function render(status) {
     || (!tunnelOn && !running);
   el.btnTunnel.title = !tunnelOn && !running ? t('title.startFirst') : '';
 
+  // 错误提示的显示/清除必须成对处理，不能只看"文本有没有变"。
+  // 之前的写法有两个问题：
+  //   1) `errorText !== state.lastError` 导致同样的错误第二次出现时不再提示；
+  //   2) 清除提示依赖 stickyNotice 标志，而该标志会被 7 秒定时器清掉，
+  //      于是错误消失后下次再失败就再也弹不出来。
+  // 现在改为：有错误就（重新）显示，没有错误就清掉，判断依据只看当前 errorText。
   const errorText = service.error || tunnel.error || '';
-  if (errorText && errorText !== state.lastError) showNotice(errorText, 'error', true);
-  if (!errorText && state.stickyNotice && el.notice.classList.contains('error')) hideNotice();
+  const noticeShowsError = el.notice.classList.contains('error');
+  if (errorText) {
+    // 文本变了，或当前没在显示错误 —— 都重新弹一次（sticky，不自动消失）
+    if (errorText !== state.lastError || !noticeShowsError) showNotice(errorText, 'error', true);
+  } else if (!errorText && noticeShowsError) {
+    // 后端已无错误：立刻把残留的错误提示收掉，不必等用户重启面板
+    hideNotice();
+  }
   state.lastError = errorText;
 
-  if (!errorText && service.restartRequired && !state.stickyNotice) {
-    showNotice(t('notice.restartRequired'), 'info', true, {
-      label: t('button.restartNow'),
-      onClick: () => act('/api/service/restart')
-    });
+  // 「需重启」提示同样按当前状态决定显隐，不再依赖 stickyNotice 标志
+  // （那个标志会被 7 秒定时器清掉，导致该提示偶尔弹不出来）。
+  const noticeShowsInfo = el.notice.classList.contains('info');
+  if (!errorText && service.restartRequired) {
+    if (!noticeShowsInfo) {
+      showNotice(t('notice.restartRequired'), 'info', true, {
+        label: t('button.restartNow'),
+        onClick: () => act('/api/service/restart')
+      });
+    }
+  } else if (!errorText && !service.restartRequired && noticeShowsInfo) {
+    hideNotice();
   }
-  if (!errorText && !service.restartRequired && state.stickyNotice && el.notice.classList.contains('info')) hideNotice();
 
   if (status.logFile) el.logFile.textContent = String(status.logFile).split(/[\\/]/).pop();
 }

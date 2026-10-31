@@ -19,6 +19,9 @@ const { execFile } = require('child_process');
 
 const CLOUDFLARED_URL = 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe';
 const FFMPEG_ZIP_URL = 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip';
+// uv：单文件 exe，能自己下载 Python 并建 venv，不需要用户预装任何 Python。
+const UV_WINDOWS_URL = 'https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-pc-windows-msvc.zip';
+const PYTHON_VERSION = '3.12';
 
 /** 把控制面板里的相对路径解析成项目根下的绝对路径 */
 function resolve(root, config) {
@@ -368,36 +371,152 @@ function warmModels(root, config, timeoutMs = 10 * 60 * 1000) {
   });
 }
 
-/** 生成一个「在新机器上重建 Python 环境」的批处理，避免控制面板被几 GB 的 pip 下载卡住 */
+/**
+ * 生成「在新机器上从零装好 Python 环境」的批处理。
+ *
+ * 关键设计：**不要求新机器预装 Python**。
+ * 老版本直接调 `py -3.12 -m venv`，但 `py`（Python Launcher）是随 Python 安装包
+ * 装进系统 PATH 的，不会跟着项目走 —— 新电脑没装 Python 时脚本第一步就退出。
+ *
+ * 现在的流程（全部落在项目内，不碰系统 PATH / 注册表）：
+ *   1. 下载 uv.exe 到 <env>\bin\uv.exe（约 15MB，单文件）
+ *   2. uv python install 3.12 --install-dir <env>\python-runtime
+ *      → Python 本体装进项目，不写注册表、不改 PATH
+ *   3. uv venv <env>\python --python <上一步的 python.exe> --seed
+ *   4. 用 venv 的 pip 装 torch(XPU) / demucs 等依赖
+ *
+ * 为什么 Python 本体单独放 python-runtime 而不在 env\python 里：
+ * venv 只是一个指向 base 解释器的壳（没有自己的 python312.dll），
+ * 若把 base 装在别处，整个 env 目录就没法随项目一起搬走。
+ * 放进来之后，env 目录整体可复制。
+ *
+ * @returns {string} 生成的 setup-env.cmd 路径
+ */
 function setupScript(root, config) {
   const paths = resolve(root, config);
   const target = path.join(root, 'setup-env.cmd');
+  const uvExe = path.join(paths.binDir, 'uv.exe');
+  // Python 本体目录（uv 管理的解释器），与 venv 分开
+  const runtimeDir = path.join(paths.dir, 'python-runtime');
+  const uvCacheDir = path.join(paths.dir, 'cache', 'uv');
+
   const content = [
     '@echo off',
     'chcp 65001 >nul',
-    'setlocal',
+    'setlocal EnableDelayedExpansion',
     `cd /d "${root}"`,
-    '',
-    'where py >nul 2>nul',
-    'if errorlevel 1 (',
-    '  echo [错误] 没有找到 Python 启动器 py，请先安装 Python 3.12。',
-    '  pause',
-    '  exit /b 1',
-    ')',
-    '',
-    `if not exist "${paths.pythonDir}" (`,
-    `  echo [1/2] 创建虚拟环境 ${paths.pythonDir}`,
-    `  py -3.12 -m venv "${paths.pythonDir}"`,
-    ')',
-    '',
-    'echo [2/2] 安装依赖（体积较大，请耐心等待）',
-    `"${paths.python}" -m pip install --upgrade pip`,
-    `"${paths.python}" -m pip install torch torchaudio --index-url https://download.pytorch.org/whl/xpu`,
-    `"${paths.python}" -m pip install demucs yt-dlp soundfile numpy requests`,
-    '',
+    'echo ============================================================',
+    'echo  Karaduoke - Python environment setup',
+    'echo  Project: ' + root.replace(/[&|<>^]/g, ''),
+    'echo  Target : ' + paths.dir.replace(/[&|<>^]/g, ''),
+    'echo ============================================================',
     'echo.',
-    'echo 完成。回到控制面板点「刷新状态」即可。',
+    '',
+    'rem ---------- uv: 全局缓存/安装目录都指向项目内，避免污染用户目录 ----------',
+    `set "UV_CACHE_DIR=${uvCacheDir}"`,
+    `set "UV_PYTHON_INSTALL_DIR=${runtimeDir}"`,
+    'set "UV_NO_MODIFY_PATH=1"',
+    'set "UV_PYTHON_DOWNLOADS=automatic"',
+    '',
+    'rem ---------- 1/4 找到或下载 uv ----------',
+    `if not exist "${paths.binDir}" mkdir "${paths.binDir}"`,
+    `if exist "${uvExe}" goto :uv_ready`,
+    '',
+    'rem 先看系统 PATH 里有没有现成的 uv（有就直接用，省一次下载）',
+    'where uv >nul 2>nul',
+    'if not errorlevel 1 (',
+    '  for /f "delims=" %%i in (\'where uv\') do @set "UV_FROM_PATH=%%i"',
+    '  echo [1/4] Found uv on PATH: !UV_FROM_PATH!',
+    '  copy /y "!UV_FROM_PATH!" "' + uvExe.replace(/[&|<>^]/g, '') + '" >nul 2>nul',
+    `  if exist "${uvExe}" goto :uv_ready`,
+    ')',
+    '',
+    'echo [1/4] Downloading uv (about 15 MB)...',
+    'set "UV_TMP=%TEMP%\\karaduoke-uv-%RANDOM%"',
+    'mkdir "!UV_TMP!" 2>nul',
+    // 路径通过环境变量 UV_TMP 传给 PowerShell（setlocal 下 set 的变量会继承给子进程），
+    // 避免在 cmd 与 PS 之间做多层引号转义。
+    'powershell -NoProfile -ExecutionPolicy Bypass -Command ' +
+      '"$ProgressPreference=\'SilentlyContinue\';' +
+      ` try { Invoke-WebRequest -Uri \'${UV_WINDOWS_URL}\' -OutFile (Join-Path $env:UV_TMP \'uv.zip\') -UseBasicParsing; exit 0 }` +
+      ' catch { Write-Host (\"download failed: \" + $_.Exception.Message); exit 1 }"' +
+      ' || goto :fail_uv',
+    'rem Windows 10+ 自带 tar 支持 zip',
+    'tar -xf "!UV_TMP!\\uv.zip" -C "!UV_TMP!" 2>nul',
+    'if not exist "!UV_TMP!\\uv.exe" goto :fail_uv',
+    `copy /y "!UV_TMP!\\uv.exe" "${uvExe}" >nul`,
+    'rmdir /s /q "!UV_TMP!" 2>nul',
+    'echo   uv installed.',
+    '',
+    ':uv_ready',
+    `if not exist "${uvExe}" goto :fail_uv`,
+    `"${uvExe}" --version || goto :fail_uv`,
+    'echo.',
+    '',
+    'rem ---------- 2/4 下载 Python 本体到项目内 ----------',
+    `if exist "${runtimeDir}" (echo [2/4] Removing previous Python runtime...)`,
+    `if exist "${runtimeDir}" rmdir /s /q "${runtimeDir}"`,
+    `echo [2/4] Installing Python ${PYTHON_VERSION} into ${runtimeDir}`,
+    `"${uvExe}" python install ${PYTHON_VERSION} --install-dir "${runtimeDir}" || goto :fail_python`,
+    // uv 把解释器放在 <install-dir>\cpython-<ver>-windows-x86_64-none\ 下，找一下
+    `set "BASE_PY="`,
+    `for /d %%d in ("${runtimeDir}\\cpython-${PYTHON_VERSION}*") do (` +
+      ` if exist "%%d\\python.exe" set "BASE_PY=%%d\\python.exe" )`,
+    'if not defined BASE_PY goto :fail_python',
+    'echo   Python ready: !BASE_PY!',
+    'echo.',
+    '',
+    'rem ---------- 3/4 创建 venv ----------',
+    `if exist "${paths.pythonDir}" (echo [3/4] Removing previous venv...)`,
+    `if exist "${paths.pythonDir}" rmdir /s /q "${paths.pythonDir}"`,
+    `echo [3/4] Creating venv at ${paths.pythonDir}`,
+    `"${uvExe}" venv "${paths.pythonDir}" --python "!BASE_PY!" --seed || goto :fail_venv`,
+    `if not exist "${paths.python}" goto :fail_venv`,
+    'echo.',
+    '',
+    'rem ---------- 4/4 安装依赖 ----------',
+    'echo [4/4] Installing dependencies (this can take 10-30 min, several GB)...',
+    'echo       torch(XPU) / torchaudio / demucs / yt-dlp ...',
+    `"${paths.python}" -m pip install --upgrade pip || goto :fail_pip`,
+    `"${paths.python}" -m pip install torch torchaudio --index-url https://download.pytorch.org/whl/xpu || goto :fail_pip`,
+    `"${paths.python}" -m pip install demucs yt-dlp soundfile numpy requests || goto :fail_pip`,
+    'echo.',
+    'echo ============================================================',
+    'echo  Done. Python and all dependencies are ready.',
+    'echo  Go back to the console and click "Refresh".',
+    'echo ============================================================',
     'pause',
+    'exit /b 0',
+    '',
+    ':fail_uv',
+    'echo.',
+    'echo [ERROR] Could not prepare uv.',
+    'echo   Check your network, or download it manually and put it here:',
+    `echo   ${uvExe}`,
+    `echo   Download: ${UV_WINDOWS_URL}`,
+    'pause',
+    'exit /b 1',
+    '',
+    ':fail_python',
+    'echo.',
+    'echo [ERROR] Could not install the Python runtime.',
+    'echo   Check your network connection and try again.',
+    'pause',
+    'exit /b 1',
+    '',
+    ':fail_venv',
+    'echo.',
+    'echo [ERROR] Could not create the virtual environment.',
+    'pause',
+    'exit /b 1',
+    '',
+    ':fail_pip',
+    'echo.',
+    'echo [ERROR] Failed to install Python dependencies.',
+    'echo   Usually a network issue. Re-run this script - it will reuse',
+    'echo   the existing Python runtime and only retry the packages.',
+    'pause',
+    'exit /b 1',
     '',
   ].join('\r\n');
   fs.writeFileSync(target, content, 'utf8');
