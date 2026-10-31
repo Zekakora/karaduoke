@@ -177,6 +177,8 @@ function loudnessFromRow(row) {
 function toPublic(row) {
   return {
     spotifyId: row.spotify_id,
+    // 同一首歌的合并键：等于自己 = 主记录；否则指向主记录
+    canonicalId: row.canonical_id || row.spotify_id,
     title: row.title,
     artists: parseArtists(row.artists),
     album: row.album || null,
@@ -230,9 +232,13 @@ function listTracks(opts = {}) {
   const loudCols = hasLoudnessColumns(conn)
     ? 't.acc_lufs, t.acc_true_peak_dbfs, t.acc_lra, t.acc_loudness_measured_at, t.acc_loudness_version, t.acc_loudness_source'
     : 'NULL AS acc_lufs, NULL AS acc_true_peak_dbfs, NULL AS acc_lra, NULL AS acc_loudness_measured_at, NULL AS acc_loudness_version, NULL AS acc_loudness_source';
+  const canonicalCols = hasCanonicalColumns(conn)
+    ? 't.canonical_id'
+    : 'NULL AS canonical_id';
   const sql = `
     SELECT t.spotify_id, t.title, t.artists, t.album, t.duration_ms, t.album_art,
            t.album_art_path, t.release_date, t.popularity, t.match_score, t.status,
+           ${canonicalCols},
            ${visualCols},
            ${loudCols},
            s.vocals_path IS NOT NULL AND s.vocals_path <> '' AS has_vocals,
@@ -250,13 +256,28 @@ function listTracks(opts = {}) {
     return { available: false, tracks: [], reason: 'query-failed' };
   }
 
-  const tracks = rows.map(toPublic);
+  // 同一首歌（EP 版 / 专辑版）只返回一条：点歌台列表不该出现两首一模一样的歌
+  const tracks = collapseSameSongs(rows.map(toPublic));
   return {
     available: true,
     dbPath: dbPath,
     total: tracks.length,
+    rawTotal: rows.length,
     tracks: opts.includeUnready ? tracks : tracks.filter((t) => t.ready),
   };
+}
+
+/** 某一行的 stems 是否齐（人声 + 伴奏），给 canonical 主记录兜底用。 */
+function stemFlags(conn, spotifyId) {
+  try {
+    return conn.prepare(`
+      SELECT s.vocals_path IS NOT NULL AND s.vocals_path <> '' AS has_vocals,
+             s.no_vocals_path IS NOT NULL AND s.no_vocals_path <> '' AS has_accompaniment
+        FROM tracks t LEFT JOIN stems s ON s.track_id = t.id
+       WHERE t.spotify_id = ?`).get(String(spotifyId || ''));
+  } catch {
+    return null;
+  }
 }
 
 /** 单曲详情（含歌词/stems 元信息） */
@@ -272,12 +293,13 @@ function getTrack(spotifyId) {
   const loudCols = hasLoudnessColumns(conn)
     ? 't.acc_lufs, t.acc_true_peak_dbfs, t.acc_lra, t.acc_loudness_measured_at, t.acc_loudness_version, t.acc_loudness_source'
     : 'NULL AS acc_lufs, NULL AS acc_true_peak_dbfs, NULL AS acc_lra, NULL AS acc_loudness_measured_at, NULL AS acc_loudness_version, NULL AS acc_loudness_source';
+  const canonicalCol = hasCanonicalColumns(conn) ? 't.canonical_id' : 'NULL AS canonical_id';
   let row;
   try {
     row = conn.prepare(`
       SELECT t.spotify_id, t.title, t.artists, t.album, t.duration_ms, t.album_art,
              t.album_art_path, t.release_date, t.popularity, t.match_score, t.status,
-             t.source_video_id, ${visualCols}, ${loudCols},
+             ${canonicalCol}, t.source_video_id, ${visualCols}, ${loudCols},
              s.vocals_path IS NOT NULL AND s.vocals_path <> '' AS has_vocals,
              s.no_vocals_path IS NOT NULL AND s.no_vocals_path <> '' AS has_accompaniment
         FROM tracks t LEFT JOIN stems s ON s.track_id = t.id
@@ -287,6 +309,19 @@ function getTrack(spotifyId) {
   }
   if (!row) return null;
   const out = toPublic(row);
+  // 同一首歌（EP 版 / 专辑版）合并后，成品文件只落在主记录那一行上。
+  // 这里必须顺着 canonical_id 去主记录把 stems 状态拿回来，否则：
+  //   * 大屏打开非主记录的 id → ready=false → 永远显示「准备中」；
+  //   * isLocalTrackReadyForPlayback() 判未就绪 → 点歌又触发一次下载（重复制作）。
+  // 媒体本身仍用本 id 的 URL（serveMedia 会兜底到主记录目录，硬链接也已补上）。
+  if (!out.ready && out.canonicalId && out.canonicalId !== id) {
+    const flags = stemFlags(conn, out.canonicalId);
+    if (flags && flags.has_vocals && flags.has_accompaniment) {
+      out.hasVocals = true;
+      out.hasAccompaniment = true;
+      out.ready = true;
+    }
+  }
   // 只暴露伴奏 + 人声两条轨：原唱/伴奏/人声导唱三种模式由前端实时混音，不落盘。
   out.audio = out.ready ? {
     accompaniment: `/media/output/library/${id}/accompaniment.mp3`,
@@ -382,7 +417,138 @@ function getVisual(spotifyId) {
   };
 }
 
-const VISUAL_STATUSES = ['pending', 'auto_matched', 'manually_confirmed', 'not_found', 'unavailable'];
+const VISUAL_STATUSES = ['pending', 'auto_matched', 'manually_confirmed', 'not_found', 'unavailable', 'cover_only'];
+
+// ---------------------------------------------------------------- 同一首歌（点歌即复用）
+//
+// 同一首歌在 Spotify 上可能有多个 track_id：EP 版 / 专辑版 / 精选集版，专辑不同但其实是同一首。
+// 按用户要求以 **Spotify 源数据** 为准：同一歌手 + 同一歌名 + 时长差 ≤ 容差（默认 8 秒）
+// → 同一首歌，直接复用曲库里已有的那份产物，不再下载/分离。
+//
+// 分组键由 Python 侧（python/library.py 的 canonical_key）写入 tracks.canonical_key，
+// 这里的规范化必须与它完全一致，否则两边算出来的组对不上：
+//   NFKC → 引号/连字符归一 → 小写 → 空白折叠；歌手排序去重后以 "|" 连接。
+const SAME_SONG_TOLERANCE_MS = Number(process.env.KARAOKE_SAME_SONG_TOLERANCE_S || 8) * 1000;
+
+const QUOTE_MAP = {
+  '\u2018': "'", '\u2019': "'", '\u201a': "'", '\u201b': "'",
+  '\u201c': '"', '\u201d': '"', '\u201e': '"', '\u2032': "'", '\u2033': '"',
+  '\u2010': '-', '\u2011': '-', '\u2012': '-', '\u2013': '-', '\u2014': '-', '\u2015': '-', '\u2212': '-',
+  '\u3000': ' ',
+};
+
+function normalizeText(value) {
+  return String(value == null ? '' : value)
+    .normalize('NFKC')
+    .replace(/[\u2018\u2019\u201a\u201b\u201c\u201d\u201e\u2032\u2033\u2010\u2011\u2012\u2013\u2014\u2015\u2212\u3000]/g, (ch) => QUOTE_MAP[ch] || ch)
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean)
+    .join(' ');
+}
+
+function canonicalKey(title, artists) {
+  const name = normalizeText(title);
+  if (!name) return '';
+  const list = (Array.isArray(artists) ? artists : parseArtists(artists)).map(normalizeText).filter(Boolean);
+  const names = [...new Set(list)].sort();
+  if (!names.length) return '';
+  return `${name}\u0000${names.join('|')}`;
+}
+
+/** 时长统一成毫秒（库里是 duration_ms；Spotify 搜索结果也可能是毫秒）。 */
+function toMs(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) return null;
+  return number > 1000 ? number : number * 1000;
+}
+
+/** 曲库是否已经有 canonical 列（老库还没跑过 Python 侧迁移时为 false）。 */
+function hasCanonicalColumns(conn = open()) {
+  if (!conn) return false;
+  try {
+    const cols = conn.prepare('PRAGMA table_info(tracks)').all().map((c) => c.name);
+    return cols.includes('canonical_key');
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 这首歌曲库记录对应的"主记录" spotifyId（EP 版 / 专辑版合并后真正存文件的那条）。
+ *
+ * 播放端做硬链接后，每个 spotifyId 目录本身都有文件，这里主要给"目录还没建"的
+ * 边缘情况（刚合并、还没补链）兜底；查不到就返回原 id。
+ */
+function getPrimaryTrackId(spotifyId) {
+  const conn = open();
+  const id = String(spotifyId || '');
+  if (!conn || !/^[A-Za-z0-9]{22}$/.test(id)) return id;
+  try {
+    if (!hasCanonicalColumns(conn)) return id;
+    const row = conn.prepare('SELECT canonical_id FROM tracks WHERE spotify_id = ?').get(id);
+    const canonical = row && row.canonical_id;
+    return canonical && canonical !== id ? String(canonical) : id;
+  } catch {
+    return id;
+  }
+}
+
+/**
+ * 找曲库里已有的"同一首歌"（同名 + 同歌手 + 时长接近），返回可直接播放的那一条。
+ *
+ * 命中就复用（点歌时**不该**重新下载/分离）；找不到返回 null，调用方再走后台制作。
+ * @param {{title: string, artists: string[]|string, durationMs?: number|null}} spotifyTrack Spotify 搜索结果
+ */
+function findExistingSong(spotifyTrack = {}) {
+  const conn = open();
+  if (!conn) return null;
+  const key = canonicalKey(spotifyTrack.title, spotifyTrack.artists);
+  if (!key) return null;
+  const target = toMs(spotifyTrack.durationMs ?? spotifyTrack.duration);
+  let rows = [];
+  try {
+    if (hasCanonicalColumns(conn)) {
+      rows = conn.prepare('SELECT spotify_id, title, artists, duration_ms FROM tracks WHERE canonical_key = ?').all(key);
+    } else {
+      rows = conn.prepare('SELECT spotify_id, title, artists, duration_ms FROM tracks').all()
+        .filter((row) => canonicalKey(row.title, row.artists) === key);
+    }
+  } catch {
+    return null;
+  }
+  const ranked = rows.map((row) => {
+    const id = String(row.spotify_id);
+    const other = toMs(row.duration_ms);
+    const diff = target != null && other != null ? Math.abs(other - target) : Number.POSITIVE_INFINITY;
+    const track = getTrack(id);
+    return {
+      id,
+      diff,
+      track,
+      ready: Boolean(track && track.ready),
+      // 主记录（canonical 指向自己）优先：队列/缓存 key 统一到它，播放和去重才稳定
+      primary: Boolean(track && (track.canonicalId || id) === id),
+    };
+  }).filter((item) => item.diff <= SAME_SONG_TOLERANCE_MS || target == null);
+  if (!ranked.length) return null;
+  // 先挑可播放的，再挑主记录，最后才是时长最接近的
+  // （同名但时长差很大的是另一首歌，已被上面的容差过滤）
+  ranked.sort((a, b) => {
+    if (a.ready !== b.ready) return a.ready ? -1 : 1;
+    if (a.primary !== b.primary) return a.primary ? -1 : 1;
+    if (a.diff !== b.diff) return a.diff - b.diff;
+    return a.id.localeCompare(b.id);
+  });
+  const chosen = ranked[0];
+  if (!chosen.track) return null;
+  return {
+    ...chosen.track,
+    // 复用来源：告诉前端/日志"这首歌是库里已有的，没有重新处理"
+    reusedFrom: chosen.ready ? chosen.id : null,
+    sameSongOf: ranked.slice(1).map((item) => item.id),
+  };
+}
 
 /**
  * 写官方 MV 记录（Node 侧写，与 deleteTrack 一样用独立短连接）。
@@ -454,7 +620,8 @@ function updateVisual(spotifyId, patch = {}) {
     }
     // 明确"没有可用的 MW 了"（播放端报错且没有 videoId）：把 id 清空，
     // 否则下次播放还会自动加载同一个坏视频。
-    if (patch.status === 'unavailable' && !keyVideo) {
+    // cover_only = 管理员主动选择「用模糊封面」，同样要清空 id（否则还会去播放）。
+    if ((patch.status === 'unavailable' || patch.status === 'cover_only') && !keyVideo) {
       put('visual_video_id', null);
       if (!keyReason && patch.reason) put('visual_match_reason', patch.reason);
     }
@@ -504,11 +671,16 @@ function adminTracks(opts = {}) {
   const loudCols = hasLoudnessColumns(conn)
     ? 't.acc_lufs, t.acc_true_peak_dbfs, t.acc_lra, t.acc_loudness_measured_at, t.acc_loudness_version, t.acc_loudness_source'
     : 'NULL AS acc_lufs, NULL AS acc_true_peak_dbfs, NULL AS acc_lra, NULL AS acc_loudness_measured_at, NULL AS acc_loudness_version, NULL AS acc_loudness_source';
+  // 同一首歌的合并键（老库还没跑迁移时为空，走 spotify_id 兜底）
+  const canonicalCols = hasCanonicalColumns(conn)
+    ? 't.canonical_id'
+    : 'NULL AS canonical_id';
   let rows;
   try {
     // 每首歌：tracks 行 + 最新 stems 行 + 最后一次失败原因（jobs 表）+ 歌词情况 + 官方 MV
     rows = conn.prepare(`
       SELECT t.spotify_id, t.title, t.artists, t.album, t.album_art, t.album_art_path,
+             ${canonicalCols},
              t.release_date, t.popularity, t.match_score, t.status, t.error,
              t.duration_ms, t.audio_bytes, t.audio_path,
              t.source_video_id, t.source_url, t.source_title, t.created_at, t.updated_at,
@@ -543,6 +715,8 @@ function adminTracks(opts = {}) {
     const updated = row.updated_at ? new Date(`${row.updated_at}Z`).getTime() : null;
     return {
       spotifyId: row.spotify_id,
+      // 同一首歌的合并键：等于自己 = 主记录；否则指向主记录（列表会按它去重）
+      canonicalId: row.canonical_id || row.spotify_id,
       title: row.title,
       artists: parseArtists(row.artists),
       album: row.album || null,
@@ -596,7 +770,64 @@ function adminTracks(opts = {}) {
 
   const counts = tracks.reduce((acc, t) => { acc[t.status] = (acc[t.status] || 0) + 1; return acc; }, {});
   const visualCounts = tracks.reduce((acc, t) => { acc[t.visualMatchStatus] = (acc[t.visualMatchStatus] || 0) + 1; return acc; }, {});
-  return { available: true, dbPath, total: tracks.length, counts, visualCounts, statusText: STATUS_TEXT, tracks };
+  // 同一首歌（EP 版 / 专辑版）只显示一条：保留最该展示的那条，其余版本挂到 versions 里
+  const deduped = collapseSameSongs(tracks);
+  const dedupedCounts = deduped.reduce((acc, t) => { acc[t.status] = (acc[t.status] || 0) + 1; return acc; }, {});
+  const dedupedVisualCounts = deduped.reduce((acc, t) => { acc[t.visualMatchStatus] = (acc[t.visualMatchStatus] || 0) + 1; return acc; }, {});
+  return {
+    available: true, dbPath,
+    total: deduped.length,
+    counts: dedupedCounts,
+    visualCounts: dedupedVisualCounts,
+    // 原始行数（含同歌不同版本），排查用
+    rawTotal: tracks.length,
+    statusText: STATUS_TEXT,
+    tracks: deduped,
+  };
+}
+
+/**
+ * 把"同一首歌"的多条记录收拢成一条。
+ *
+ * 曲库页对用户来说一首歌就是一行：EP 版和专辑版没必要各占一行。
+ * group 的键是 canonical_id（Python 侧按"同名 + 同歌手 + 时长接近"算出来）；
+ * 主记录优先，没有主记录时取最完整的那条。其余版本放进 `versions`，
+ * 前端可以显示"另有 2 个版本"或直接忽略。
+ */
+function collapseSameSongs(tracks) {
+  if (!Array.isArray(tracks) || !tracks.length) return [];
+  const byKey = new Map();
+  for (const track of tracks) {
+    const key = track.canonicalId || track.spotifyId;
+    const list = byKey.get(key);
+    if (list) list.push(track); else byKey.set(key, [track]);
+  }
+  const rank = (track) => {
+    // **可播放优先**，其次主记录，再次状态靠后（已处理），再次 id 小。
+    // 顺序不能反：如果主记录还没分离（例如只有 downloaded），把不可播的那条排在前面，
+    // 整组显示成"未就绪"，用户再点一次就重复下载 —— 而组里其实有能播的版本。
+    const isPrimary = !track.canonicalId || track.canonicalId === track.spotifyId;
+    const statusRank = { separated: 3, processing: 2, failed: 1 }[track.status] || 0;
+    return [track.ready ? 1 : 0, isPrimary ? 1 : 0, statusRank];
+  };
+  const out = [];
+  for (const list of byKey.values()) {
+    if (list.length === 1) { out.push(list[0]); continue; }
+    const sorted = [...list].sort((a, b) => {
+      const ra = rank(a); const rb = rank(b);
+      for (let i = 0; i < ra.length; i += 1) if (ra[i] !== rb[i]) return rb[i] - ra[i];
+      return String(a.spotifyId).localeCompare(String(b.spotifyId));
+    });
+    const [primary, ...rest] = sorted;
+    out.push({
+      ...primary,
+      // 展示用的这条如果不是主记录，也按它的真实状态展示；
+      // 但点歌/播放仍会通过 findExistingSong 映射到库里可播的那条。
+      versions: rest.map((v) => ({ spotifyId: v.spotifyId, album: v.album, durationMs: v.durationMs, status: v.status, ready: v.ready })),
+      versionCount: rest.length + 1,
+    });
+  }
+  return out;
 }
 
 /**
@@ -634,14 +865,36 @@ function summary() {
   const conn = open();
   if (!conn) return { available: false };
   try {
-    const n = conn.prepare('SELECT COUNT(*) AS n FROM tracks').get().n;
-    const ready = conn.prepare(`
-      SELECT COUNT(*) AS n FROM tracks t JOIN stems s ON s.track_id = t.id
-       WHERE s.vocals_path IS NOT NULL AND s.no_vocals_path IS NOT NULL`).get().n;
+    // 统计按"同一首歌"分组去重：EP 版 / 专辑版合并后只算一首
+    const n = countSongs(conn);
+    const ready = countSongs(conn, true);
     return { available: true, total: n, ready, dbPath };
   } catch {
     return { available: false };
   }
+}
+
+/**
+ * 曲库"歌曲数"（按同一首歌去重）。
+ *
+ * tracks 表里同名同歌手不同专辑可能是多行（EP 版 / 专辑版），对用户来说只是同一首，
+ * 所以统计时用 canonical_id 归并：每组只算一次。
+ * @param {boolean} [readyOnly] 只数已就绪的
+ */
+function countSongs(conn, readyOnly = false) {
+  if (!conn) return 0;
+  if (!hasCanonicalColumns(conn)) {
+    const row = readyOnly
+      ? conn.prepare(`SELECT COUNT(*) AS n FROM tracks t JOIN stems s ON s.track_id = t.id
+                       WHERE s.vocals_path IS NOT NULL AND s.no_vocals_path IS NOT NULL`).get()
+      : conn.prepare('SELECT COUNT(*) AS n FROM tracks').get();
+    return row.n;
+  }
+  const row = conn.prepare(`
+    SELECT COUNT(DISTINCT COALESCE(t.canonical_id, t.spotify_id)) AS n
+      FROM tracks t ${readyOnly ? 'JOIN stems s ON s.track_id = t.id' : ''}
+     ${readyOnly ? 'WHERE s.vocals_path IS NOT NULL AND s.no_vocals_path IS NOT NULL' : ''}`).get();
+  return row.n;
 }
 
 // ---------------------------------------------------------------- 残留文件清理
@@ -925,5 +1178,9 @@ module.exports = {
   getVisual, getVisualRow, updateVisual, hasVisualColumns, visualFallback, VISUAL_STATUSES,
   // 伴奏响度（ffmpeg 测得；播放端用它算实时增益）
   hasLoudnessColumns, loudnessFromRow,
+  // 同一首歌（歌名 + 歌手 + 时长容差）：搜索与点歌复用已有曲库
+  canonicalKey, findExistingSong, hasCanonicalColumns, SAME_SONG_TOLERANCE_MS, getPrimaryTrackId,
+  // 同一首歌在列表/统计里的合并（EP 版 / 专辑版只算一首）
+  collapseSameSongs, countSongs,
   STATUS_TEXT, resolvePath, songKeySupported: true,
 };

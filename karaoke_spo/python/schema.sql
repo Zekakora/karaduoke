@@ -55,6 +55,12 @@ CREATE TABLE IF NOT EXISTS tracks (
   audio_path        TEXT,                          -- 原始下载（44.1k WAV）
   audio_bytes       INTEGER,
   audio_sha256      TEXT,                          -- 内容级去重
+  -- 同一首歌的规范化身份：歌名 + 歌手完全一致 → 同一个 canonical_id。
+  -- 一组里只有"主记录"的 canonical_id 等于自己的 spotify_id，其余记录指向它，
+  -- 音频 / 分离产物 / 歌词 / 封面全部复用主记录那一份，避免重复下载与重复分离。
+  -- canonical_key 由 library.py 的 init_db() 以生成列方式补上（Python 函数
+  -- tracks_canonical_key），因此 schema.sql 里不声明它，否则老库建索引会失败。
+  canonical_id      TEXT,
   -- 状态
   status            TEXT NOT NULL DEFAULT 'new',
       -- new | resolving | resolved | downloading | downloaded
@@ -69,6 +75,7 @@ CREATE INDEX IF NOT EXISTS idx_tracks_artist   ON tracks(artists);
 CREATE INDEX IF NOT EXISTS idx_tracks_sha      ON tracks(audio_sha256);
 CREATE INDEX IF NOT EXISTS idx_tracks_sourceid ON tracks(source_video_id);
 CREATE INDEX IF NOT EXISTS idx_tracks_visual   ON tracks(visual_video_id);
+CREATE INDEX IF NOT EXISTS idx_tracks_canonical ON tracks(canonical_id);
 
 -- 分离结果：一行 = 一种模型对某曲目的分离产物
 CREATE TABLE IF NOT EXISTS stems (

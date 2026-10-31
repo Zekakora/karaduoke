@@ -50,6 +50,13 @@
   // MV 一进入 PLAYING（真正出画面）就立刻开始淡入，不再额外等待（=0）。
   // 想要"等几秒再淡入"就把这里调大（单位毫秒）。
   const MV_REVEAL_DELAY_MS = 0;
+  /**
+   * 首播兜底：MV ready + 要求播放后，这么久还没等到 PLAYING，就重试 play / 重建播放器。
+   * 见 _armPlayWatchdog()。
+   */
+  const PLAY_WATCHDOG_MS = 2500;
+  /** 重建播放器之后的第二段等待（慢网缓冲留余量）。 */
+  const PLAY_WATCHDOG_RETRY_MS = 6000;
 
   const YT_STATE = { UNSTARTED: -1, ENDED: 0, PLAYING: 1, PAUSED: 2, BUFFERING: 3, CUED: 5 };
 
@@ -213,6 +220,9 @@
     // 交叉淡化：MV 先在封面下面播，稳定几秒后才淡入（避免看到黑屏/缓冲画面）
     this.videoRevealed = false;
     this.revealTimer = null;
+    // 首播兜底（见 _armPlayWatchdog）：没等到 PLAYING 时的重试次数与计时器
+    this.playWatchdog = null;
+    this.playRetries = 0;
 
     this.curIndex = null;   // 当前行号（含间隙期：保持为最后唱过的那行）
     // 上一次播放过"切行入场动画"的行号：同一行不重复播（切换逐字/逐行时尤其重要）
@@ -327,6 +337,7 @@
     this.visualVideoId = next;
     this._destroyPlayer();
     this.ytFailed = false;
+    this.playRetries = 0;   // 换歌/换 id：重试预算重新给
     if (!next) {
       // 没有 MV：直接回退模糊封面（不创建播放器，避免空 iframe 白屏/黑屏）
       this._hideMvLayer();
@@ -356,6 +367,9 @@
     if (!this.mvWrap || this.videoRevealed) return;
     clearTimer(this.revealTimer);
     this.revealTimer = null;
+    // 已经露出来了，首播兜底就没必要再跑
+    clearTimer(this.playWatchdog);
+    this.playWatchdog = null;
     this.videoRevealed = true;
     this.mvWrap.hidden = false;
     // CSS 过渡负责"慢慢淡化"：给 stage 加 vlm-mv-on，封面 opacity → 0，MV opacity 0 → 1。
@@ -431,8 +445,13 @@
               // 等真正进入 PLAYING 且稳定几秒后再淡入（见 _scheduleReveal）。
               this._setStatus('');
               // 跟随当前本地音频状态（不要自作主张 autoplay）
-              if (this.playing) this._playVideo();
-              else this._pauseVideo();
+              if (this.playing) {
+                this._playVideo();
+                // 首播兜底：ready 后如果迟迟等不到 PLAYING，重试/重建（见 _armPlayWatchdog）
+                this._armPlayWatchdog();
+              } else {
+                this._pauseVideo();
+              }
             },
             onStateChange: (event) => {
               if (player !== this.yt) return;
@@ -560,6 +579,8 @@
   VideoLyricsMode.prototype._destroyPlayer = function _destroyPlayer() {
     this.playerToken += 1;
     this._clearReadyTimer();
+    clearTimer(this.playWatchdog);
+    this.playWatchdog = null;
     clearTimer(this.loopTimer);
     this.loopTimer = null;
     this._unrevealVideo(); // 切歌/销毁时把封面放回来，避免闪黑
@@ -587,14 +608,76 @@
    */
   VideoLyricsMode.prototype.setPlaying = function setPlaying(playing) {
     this.playing = Boolean(playing);
-    if (!this.yt || !this.ytReady || this.ytFailed) return;
-    if (this.playing) this._playVideo();
-    else this._pauseVideo();
+    if (!this.yt || !this.ytReady || this.ytFailed) {
+      // 还没 ready：记住意图即可，onReady 里会按 this.playing 补一次 play
+      return;
+    }
+    if (this.playing) {
+      this._playVideo();
+      this._armPlayWatchdog();
+    } else {
+      this._pauseVideo();
+    }
+  };
+
+  /**
+   * 播放看门狗：**首播专属的兜底**。
+   *
+   * 实测现象：新歌第一次播放时，MV iframe 已经建好、id 也对，`playVideo()` 也调了，
+   * 但 YouTube 迟迟不发 PLAYING 事件 → `_scheduleReveal` 永远不触发 →
+   * 模糊封面一直盖着，看起来就是"没有 MV"；同一首重播时却 2 秒就出来了。
+   *
+   * 这里兜三层：等一会儿重试 play → 还不行就重建一次播放器 → 最后才判失败回退封面。
+   * 每一层都比"永远盖着封面、也不报错"好。
+   */
+  VideoLyricsMode.prototype._armPlayWatchdog = function _armPlayWatchdog() {
+    if (this.playWatchdog) return;
+    if (this.ytFailed || !this.playing || !this.ytReady || this.videoRevealed) return;
+    // 重建过播放器之后再给更长的等待：慢网下 MV 缓冲就是会久一点，
+    // 不能因为"比别人慢"就把这首歌判成没有 MV。
+    const delay = this.playRetries < 1 ? PLAY_WATCHDOG_MS : PLAY_WATCHDOG_RETRY_MS;
+    this.playWatchdog = setTimer(() => {
+      this.playWatchdog = null;
+      if (this.ytFailed || !this.playing || !this.ytReady || this.videoRevealed) return;
+      // 第一层：可能只是一次 play 没生效，重试一次
+      this._playVideo();
+      if (this.playRetries < 1) {
+        // 第二层：重建播放器（只重建一次），旧实例可能已经"哑"了
+        this.playRetries += 1;
+        const videoId = this.visualVideoId;
+        this._destroyPlayer();
+        if (videoId) this._createPlayer(videoId);
+        return;
+      }
+      // 第三层：确实没放出来。**只在本机回退封面**，不写曲库 ——
+      // 慢网/临时抽风不等于"这个 MV 不可用"，写 unavailable 会让它以后都不再加载。
+      this._abandonVideo('MV 播放器无响应');
+    }, delay);
+  };
+
+  /**
+   * 放弃这一首 MV 的播放（本地回退封面），但**不**上报"不可用"。
+   *
+   * 与 _failVideo 的区别：_failVideo 用于 YouTube 明确报错（101/150 等，
+   * 这个视频确实放不出来，要写回曲库免得下次再加载）；这里用于"没等到画面"
+   * 这种说不清的临时状态，只在本次播放回退到模糊封面。
+   */
+  VideoLyricsMode.prototype._abandonVideo = function _abandonVideo(reason) {
+    if (this.ytFailed) return;
+    this.ytFailed = true;
+    this.ytReady = false;
+    this._destroyPlayer();
+    this._hideMvLayer();
+    this._applyBlurredCover();
+    this._setStatus(this.t('mvUnavailable', '官方 MV 不可用，已切换到专辑封面'));
+    if (global.console && global.console.warn) global.console.warn('[mv] 放弃本次 MV 播放：' + String(reason || ''));
   };
 
   /** 音频结束 / 切歌前：停止 MV（不销毁，销毁由 destroy() 或 setVisualVideoId 负责） */
   VideoLyricsMode.prototype.stopVideo = function stopVideo() {
     this.playing = false;
+    clearTimer(this.playWatchdog);
+    this.playWatchdog = null;
     this._stopVideo();
   };
 

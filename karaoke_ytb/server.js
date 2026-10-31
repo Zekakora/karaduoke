@@ -4,6 +4,10 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const QRCode = require('qrcode');
+const ytdlpSearch = require('./lib/ytdlp-search');
+
+// 点歌台一次搜索返回多少条：yt-dlp 和官方 API 用同一个数字（以前官方写死 12）
+const YTDLP_SEARCH_LIMIT = Math.max(1, Math.min(Number(process.env.KARAOKE_SEARCH_LIMIT || 12), 25));
 
 const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || '0.0.0.0';
@@ -443,31 +447,54 @@ async function readBody(req) {
   catch { throw new Error('请求格式不是有效 JSON'); }
 }
 
+/** 官方 Data API 搜索（第二顺位：yt-dlp 不可用时才走，因为 search.list 一次 100 单位配额） */
+async function youtubeApiSearch(q, limit = 12) {
+  const url = new URL('https://www.googleapis.com/youtube/v3/search');
+  url.searchParams.set('part', 'snippet');
+  url.searchParams.set('type', 'video');
+  url.searchParams.set('maxResults', String(limit));
+  url.searchParams.set('q', q);
+  url.searchParams.set('videoEmbeddable', 'true');
+  url.searchParams.set('key', youtubeApiKey());
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`YouTube 搜索失败（${response.status}）`);
+  const data = await response.json();
+  return (data.items || []).map(item => ({
+    videoId: item.id.videoId,
+    title: item.snippet.title,
+    channelTitle: item.snippet.channelTitle,
+    duration: '—',
+    thumbnailUrl: item.snippet.thumbnails?.medium?.url || item.snippet.thumbnails?.default?.url || '',
+    embeddable: true,
+    source: 'youtube-api'
+  }));
+}
+
+/**
+ * 搜索顺序：**yt-dlp 优先 → 官方 Data API 兜底 → 内置演示目录**。
+ *
+ * 为什么 yt-dlp 打头：官方 search.list 一次 100 单位、每天 10,000，
+ * 点歌台搜 100 次就打光，光了一整晚搜不出歌；yt-dlp 走网页接口没有配额，
+ * 还顺带给出时长（官方搜索结果里没有）。官方 API 保留兜底：
+ * yt-dlp 没装 / 被限流 / 网络不通时自动接管（失败后有冷却，见 lib/ytdlp-search.js）。
+ */
 async function youtubeSearch(query) {
   const q = String(query || '').trim();
   const directVideoId = extractYouTubeVideoId(q);
   if (directVideoId) return [await youtubeVideoItem(directVideoId)];
   if (!q) return demoCatalog.slice(0, 6);
-  if (youtubeApiKey()) {
-    const url = new URL('https://www.googleapis.com/youtube/v3/search');
-    url.searchParams.set('part', 'snippet');
-    url.searchParams.set('type', 'video');
-    url.searchParams.set('maxResults', '12');
-    url.searchParams.set('q', q);
-    url.searchParams.set('videoEmbeddable', 'true');
-    url.searchParams.set('key', youtubeApiKey());
-    const response = await fetch(url);
-    if (!response.ok) throw new Error(`YouTube 搜索失败（${response.status}）`);
-    const data = await response.json();
-    return (data.items || []).map(item => ({
-      videoId: item.id.videoId,
-      title: item.snippet.title,
-      channelTitle: item.snippet.channelTitle,
-      duration: '—',
-      thumbnailUrl: item.snippet.thumbnails?.medium?.url || item.snippet.thumbnails?.default?.url || '',
-      embeddable: true
-    }));
+
+  if (ytdlpSearch.enabled()) {
+    const items = await ytdlpSearch.search(q, { limit: YTDLP_SEARCH_LIMIT });
+    // 数组（哪怕是空的）= yt-dlp 正常答了：
+    //   有结果直接返回，不花官方配额；空结果也返回空，让用户看到"没有找到"，
+    //   不要因为搜不到（比如生僻词）就默默烧掉 100 单位配额再搜一遍。
+    if (Array.isArray(items)) return items;
+    // null = 这次真失败了（已进冷却）→ 落到官方 API
   }
+
+  if (youtubeApiKey()) return youtubeApiSearch(q, YTDLP_SEARCH_LIMIT);
+
   const lower = q.toLowerCase();
   return demoCatalog.filter(item => `${item.title} ${item.channelTitle}`.toLowerCase().includes(lower));
 }
@@ -601,8 +628,23 @@ async function handleApi(req, res, url) {
     return sendJson(res, 200, adminState());
   }
   if (method === 'GET' && pathname === '/api/youtube/search') {
-    try { return sendJson(res, 200, { items: await youtubeSearch(url.searchParams.get('q')) }); }
-    catch (error) { return sendError(res, 502, error.message, 'YOUTUBE_SEARCH_FAILED'); }
+    try {
+      const items = await youtubeSearch(url.searchParams.get('q'));
+      // source 让前端/排查一眼看出这次是 yt-dlp 还是官方 API 答的
+      return sendJson(res, 200, { items, source: (items[0] && items[0].source) || 'demo' });
+    } catch (error) {
+      // yt-dlp 挂了不应该整个搜索 502：还有演示目录能兜一下
+      return sendError(res, 502, error.message, 'YOUTUBE_SEARCH_FAILED');
+    }
+  }
+  // 搜索源自检：控制台/命令行排查用，不需要权限也能看（不泄露密钥）
+  if (method === 'GET' && pathname === '/api/youtube/search-source') {
+    return sendJson(res, 200, {
+      ytdlp: ytdlpSearch.status(),
+      youtubeApiKey: Boolean(youtubeApiKey()),
+      limit: YTDLP_SEARCH_LIMIT,
+      order: ['ytdlp', 'youtube-api', 'demo'],
+    });
   }
   if (method === 'GET' && pathname === '/api/qr') {
     try { return sendJson(res, 200, { dataUrl: await QRCode.toDataURL(url.searchParams.get('text') || `${publicOrigin(req)}/join`, { margin: 1, width: 360, color: { dark: '#102a43', light: '#ffffff' } }) }); }
