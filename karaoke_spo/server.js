@@ -15,6 +15,10 @@ const spotify = require('./lib/spotify.js');
 // 与音频侧（fetch_audio 的 sourceVideoId + MP4）完全独立，见 docs/official-mv.md。
 const officialMv = require('./lib/official-mv.js');
 const youtube = require('./lib/youtube.js');
+// 免配额的官方 MV 源（ytmusicapi）。它不可用时，official-mv.js 会自动退回官方 Data API。
+const ytmusic = require('./lib/ytmusic.js');
+// 伴奏响度测量（ffmpeg LUFS / True Peak）。只测不写音频，播放端实时补增益。
+const loudness = require('./lib/loudness.js');
 const { PrepareQueue } = require('./lib/prepare-queue.js');
 const { MatchWorker } = require('./lib/match-worker.js');
 const queueOrder = require('./lib/queue-order.js');
@@ -77,6 +81,14 @@ function verifyAdminToken(token) {
   return actualBuffer.length === expectedBuffer.length && crypto.timingSafeEqual(actualBuffer, expectedBuffer);
 }
 function clamp(value, min, max) { return Math.min(max, Math.max(min, value)); }
+/**
+ * 取数字并钳制；不是有限数字（缺失 / 手改坏了 / NaN）时用 fallback。
+ * 注意 fallback 也要钳制 —— 默认值本身必须落在合法区间里。
+ */
+function clampNumber(value, fallback, min, max) {
+  const n = Number(value);
+  return clamp(Number.isFinite(n) ? n : fallback, min, max);
+}
 
 function defaultState() {
   return {
@@ -107,6 +119,19 @@ function defaultState() {
       videoShowLyrics: true,
       // 歌词是否显示翻译（网易云/QQ 的 tlyric）
       showTranslation: true,
+      // ── 伴奏响度均衡 ──
+      // 后端用 ffmpeg 测出每首伴奏的 LUFS / True Peak 存进曲库，播放时前端 Web Audio
+      // 按这些数字实时补增益。**不改音频文件**（只存元数据 + 播放端增益）。
+      loudnessAutoEnabled: true,
+      // 目标响度（LUFS）。-18 比流媒体的 -14 保守：现场还要叠人声，
+      // 留一点余量给"人声 100%"和限幅器。
+      loudnessTargetLufs: -18,
+      // True Peak 上限（dBFS）。防止响度对齐后真峰值过 0 触发削波。
+      loudnessTruePeakCeiling: -1,
+      // 单首最多补多少 / 最多压多少 dB。避免把一张很安静的现场录音猛拉 +20dB
+      // （底噪和设备噪声一起被放大），也避免把很响的歌压得听不见。
+      loudnessMaxGainDb: 12,
+      loudnessMaxCutDb: 12,
       sourceMode: MODE
     },
     sessions: {},
@@ -207,6 +232,13 @@ state.settings.drinkRotationSeconds ??= 12;
 state.settings.drinkDuration ??= Number(state.settings.drinkRotationSeconds) || 8;
 state.settings.drinkInterval ??= 4;
 state.settings.broadcastInterval ??= 4;
+// 响度均衡：老 state.json 没有这些字段，补齐默认并做一次范围钳制
+// （手改 state.json 写出 -100 LUFS 这种值也不会把播放端搞坏）。
+state.settings.loudnessAutoEnabled = state.settings.loudnessAutoEnabled !== false;
+state.settings.loudnessTargetLufs = clampNumber(state.settings.loudnessTargetLufs, -18, -40, -5);
+state.settings.loudnessTruePeakCeiling = clampNumber(state.settings.loudnessTruePeakCeiling, -1, -9, 0);
+state.settings.loudnessMaxGainDb = clampNumber(state.settings.loudnessMaxGainDb, 12, 0, 24);
+state.settings.loudnessMaxCutDb = clampNumber(state.settings.loudnessMaxCutDb, 12, 0, 24);
 // 旧版广播带 expiresAt，过期的不再进入新的循环列表。
 state.broadcasts = (Array.isArray(state.broadcasts) ? state.broadcasts : [])
   .filter(item => !item.expiresAt || new Date(item.expiresAt).getTime() > Date.now());
@@ -570,7 +602,9 @@ function queueSongsNeedingMv() {
 
 /** 启动一轮 MV 解析（不阻塞调用方；同一首歌同时只跑一次） */
 function maybeStartMvResolve() {
-  if (!youtube.hasKey()) return;
+  // 官方 API 没 Key **且** YouTube Music 源也不可用时才放弃 ——
+  // 只要还有一个源能用，就还能匹配到官方 MV（ytmusicapi 不需要任何 Key / 配额）。
+  if (!youtube.hasKey() && !ytmusic.enabled()) return;
   const targets = queueSongsNeedingMv().filter((id) => !mvResolving.has(id));
   for (const spotifyId of targets) {
     resolveMvFor(spotifyId).catch((error) => {
@@ -670,12 +704,26 @@ const matcher = new MatchWorker({
       lines: (payload.lines || []).length,
     };
   },
+  // 单首：伴奏响度测量（ffmpeg，只测不写音频）
+  runLoudness: async (item) => {
+    const result = await loudness.measure(item.spotifyId, { force: false });
+    // measure() 不抛错：拿不到结果时返回 {ok:false}，这里要**抛出去**，
+    // 否则这首歌会被算成 done（MatchWorker 的约定：失败必须抛，见 lib/match-worker.js）。
+    if (!result.ok) throw new Error(result.error || `响度测量失败（${result.code || 'unknown'}）`);
+    return {
+      lufs: result.lufs,
+      truePeakDbfs: result.truePeakDbfs ?? null,
+      lra: result.lra ?? null,
+      written: Boolean(result.written),
+    };
+  },
 });
 
 /** 曲库里"还没匹配"的歌（供一键匹配按钮统计与提交） */
 function collectMatchCandidates({ kinds = ['mv', 'lyrics'] } = {}) {
   const wantMv = kinds.includes('mv');
   const wantLyrics = kinds.includes('lyrics');
+  const wantLoudness = kinds.includes('loudness');
   const out = [];
   for (const track of libraryDb.listTracks({ limit: 1000, includeUnready: true }).tracks || []) {
     const need = [];
@@ -690,6 +738,11 @@ function collectMatchCandidates({ kinds = ['mv', 'lyrics'] } = {}) {
       const stored = libraryDb.getLyrics(track.spotifyId);
       const hasOverride = Boolean(lyricsOverrides.get(`local:${track.spotifyId}`)?.payload);
       if (!hasOverride && !(stored && stored.content)) need.push('lyrics');
+    }
+    if (wantLoudness) {
+      // 没测过伴奏响度的歌（老曲库导入的那些）。
+      // 只要求有伴奏文件 —— 没伴奏就没得测，测了也没用。
+      if (!track.loudness && track.hasAccompaniment) need.push('loudness');
     }
     if (need.length) out.push({ spotifyId: track.spotifyId, title: track.title, kinds: need });
   }
@@ -1406,12 +1459,12 @@ async function handleApi(req, res, url) {
         } else if (job && track.status === 'separated') {
           out.jobStatus = job.status;
         }
-        // 成品 4 个 mp3 的总大小
+        // 成品 2 个 mp3 的总大小
         try {
           const dir = path.join(OUT_DIR, track.spotifyId);
           if (fs.existsSync(dir)) {
             let bytes = 0;
-            for (const name of ['accompaniment.mp3', 'vocals.mp3', 'guide.mp3', 'original.mp3']) {
+            for (const name of ['accompaniment.mp3', 'vocals.mp3']) {
               const p = path.join(dir, name);
               if (fs.existsSync(p)) bytes += fs.statSync(p).size;
             }
@@ -1438,7 +1491,13 @@ async function handleApi(req, res, url) {
       data.counts = data.tracks.reduce((acc, track) => { acc[track.status] = (acc[track.status] || 0) + 1; return acc; }, {});
       // 一键匹配的进度 + 待补数量（曲库页按钮与进度条用）
       data.matcher = matcher.toPublic();
-      data.matchCandidates = { mv: collectMatchCandidates({ kinds: ['mv'] }).length, lyrics: collectMatchCandidates({ kinds: ['lyrics'] }).length };
+      data.matchCandidates = {
+        mv: collectMatchCandidates({ kinds: ['mv'] }).length,
+        lyrics: collectMatchCandidates({ kinds: ['lyrics'] }).length,
+        loudness: collectMatchCandidates({ kinds: ['loudness'] }).length,
+      };
+      // 响度测量器是否可用（ffmpeg / Python 在不在）。曲库页据此决定"补测响度"按钮能不能点。
+      data.loudnessTool = loudness.status();
       // 官方 MV 的状态分布 + 搜索配置（前端「MV」列筛选和弹窗说明用）
       data.visualCounts = data.tracks.reduce((acc, track) => { acc[track.visualMatchStatus] = (acc[track.visualMatchStatus] || 0) + 1; return acc; }, {});
       data.visualConfig = {
@@ -1447,6 +1506,8 @@ async function handleApi(req, res, url) {
         pendingThreshold: officialMv.CONFIG.pendingThreshold,
         apiKeyConfigured: youtube.hasKey(),
         quota: youtube.quota(),
+        // 免配额的官方 MV 源（ytmusicapi）是否可用 —— 前端据此判断"配额用完还能不能匹配"
+        ytmusic: ytmusic.status(),
       };
     }
     return sendJson(res, 200, data);
@@ -1461,6 +1522,7 @@ async function handleApi(req, res, url) {
         job: matcher.toPublic(),
         candidates: collectMatchCandidates({ kinds }).length,
         query: youtube.quota(),
+        ytmusicAvailable: ytmusic.enabled(),
       });
     }
     if (method === 'POST' && pathname === '/api/library/admin/match/cancel') {
@@ -1469,13 +1531,24 @@ async function handleApi(req, res, url) {
     if (method === 'POST' && pathname === '/api/library/admin/match') {
       const body = await readBody(req);
       const kinds = (Array.isArray(body.kinds) ? body.kinds : ['mv', 'lyrics'])
-        .map(String).filter((k) => k === 'mv' || k === 'lyrics');
-      // 今天 YouTube 搜索配额已用完 → 直接告诉前端，不要起一个注定全程"跳过"的批次
+        .map(String)
+        .filter((k) => k === 'mv' || k === 'lyrics' || k === 'loudness');
+      if (!kinds.length) return sendJson(res, 200, { ok: true, started: false, reason: 'nothing-to-match', job: matcher.toPublic(), count: 0 });
+      // force = 管理员在「配额已用完」的红色按钮上二次确认后的强行重试。
+      // 这时先清掉我们自己设的限流冷却，让官方 API 真的再试一次
+      // （万一 Google 那边已经恢复了，不该用昨天的判断一直挡着）。
+      const force = body.force === true || body.force === 'true';
+      let quotaReset = false;
+      if (force) quotaReset = youtube.clearCooldown().cleared;
+      // 官方 API 限流/配额用完 → 先告诉前端（按钮变红 + 二次确认），
+      // 不要起一个注定全程"跳过"的批次；管理员确认后带 force 再来。
       const q = youtube.quota();
-      if (kinds.includes('mv') && q.rateLimited) {
+      if (kinds.includes('mv') && q.rateLimited && !force) {
         return sendJson(res, 200, {
           ok: true, started: false, reason: q.exhausted ? 'quota-exhausted' : 'rate-limited',
           job: matcher.toPublic(), count: 0, quota: q,
+          // 前端据此决定弹窗文案：有免配额源时，强行重试基本能成
+          ytmusicAvailable: ytmusic.enabled(),
         });
       }
       const requested = Array.isArray(body.spotifyIds) && body.spotifyIds.length
@@ -1492,8 +1565,11 @@ async function handleApi(req, res, url) {
       if (!started.ok) {
         return sendJson(res, 409, { ok: false, reason: started.reason, job: started.job, code: 'MATCH_ALREADY_RUNNING' });
       }
-      console.log(`[match] 一键匹配开始：${items.length} 首（${kinds.join('+')}）`);
-      return sendJson(res, 200, { ok: true, started: true, count: items.length, kinds, job: started.job });
+      console.log(`[match] 一键匹配开始：${items.length} 首（${kinds.join('+')}）${force ? ' [强行重试]' : ''}`);
+      return sendJson(res, 200, {
+        ok: true, started: true, count: items.length, kinds, job: started.job,
+        forced: force, quotaReset, ytmusicAvailable: ytmusic.enabled(),
+      });
     }
   }
   // ---- 官方 MV 管理（曲库管理页「MV」列 + 弹窗）----
@@ -1521,6 +1597,7 @@ async function handleApi(req, res, url) {
         queryTemplates: officialMv.QUERY_TEMPLATES,
         // 被 YouTube 限流时前端要能提示"暂停搜索、X 秒后自动恢复"
         quota: youtube.quota(),
+        ytmusic: ytmusic.status(),
       },
     });
   }
@@ -2323,6 +2400,12 @@ async function handleApi(req, res, url) {
         if (body.videoShowLyrics !== undefined) state.settings.videoShowLyrics = Boolean(body.videoShowLyrics);
         // 歌词翻译开关
         if (body.showTranslation !== undefined) state.settings.showTranslation = Boolean(body.showTranslation);
+        // ── 伴奏响度均衡（只影响播放端增益，不碰音频文件）──
+        if (body.loudnessAutoEnabled !== undefined) state.settings.loudnessAutoEnabled = body.loudnessAutoEnabled !== false;
+        if (body.loudnessTargetLufs !== undefined) state.settings.loudnessTargetLufs = clampNumber(body.loudnessTargetLufs, state.settings.loudnessTargetLufs, -40, -5);
+        if (body.loudnessTruePeakCeiling !== undefined) state.settings.loudnessTruePeakCeiling = clampNumber(body.loudnessTruePeakCeiling, state.settings.loudnessTruePeakCeiling, -9, 0);
+        if (body.loudnessMaxGainDb !== undefined) state.settings.loudnessMaxGainDb = clampNumber(body.loudnessMaxGainDb, state.settings.loudnessMaxGainDb, 0, 24);
+        if (body.loudnessMaxCutDb !== undefined) state.settings.loudnessMaxCutDb = clampNumber(body.loudnessMaxCutDb, state.settings.loudnessMaxCutDb, 0, 24);
       });
       return sendJson(res, 200, adminState());
     }
@@ -2538,8 +2621,12 @@ function restorePrepareJobs() {
   // 丢了队列项、但任务还在跑（用户已删歌）的情况：任务继续，不需要额外处理
   if (restored || requeued) console.log(`[prepare] 恢复后台任务：jobs=${restored} requeued=${requeued}`);
   else if (prepareQueue.pending.length) console.log(`[prepare] 待执行任务 ${prepareQueue.pending.length} 个`);
-  // 队列里的歌如果还没匹配过官方 MV，顺手补一次（只调 YouTube Data API，与音频处理并行）
-  if (!youtube.hasKey()) console.log('[mv] 未配置 YouTube API Key：官方 MV 匹配跳过，视频模式用模糊封面');
+  // 队列里的歌如果还没匹配过官方 MV，顺手补一次（与音频处理并行）
+  if (!youtube.hasKey() && !ytmusic.enabled()) {
+    console.log('[mv] 未配置 YouTube API Key，且 YouTube Music 源不可用：官方 MV 匹配跳过，视频模式用模糊封面');
+  } else if (ytmusic.enabled()) {
+    console.log('[mv] 官方 MV 首选源：YouTube Music（ytmusicapi，免配额）；官方 Data API 兜底');
+  }
   resumeIdleQueueOnBoot();
   schedulePrepareSync();
 }

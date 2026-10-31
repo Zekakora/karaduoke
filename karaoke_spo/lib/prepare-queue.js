@@ -29,6 +29,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 const { ENV_DIR } = require('./env');
+const { childEnv } = require('./child-env');
 
 const ROOT = path.resolve(__dirname, '..');
 const JOBS_FILE = path.join(ROOT, 'data', 'prepare-jobs.json');
@@ -575,8 +576,7 @@ class PrepareQueue {
       try {
         child = this.spawnImpl(this.pythonExe, args, {
           cwd: this.projectRoot,
-          env: {
-            ...process.env,
+          env: childEnv({
             // 显式把"自己解析出来的 ENV_DIR"传给 Python，原因有两个：
             //   * 直接 `node karaoke_spo/main.js` 启动时没有启动器注入 KARAOKE_ENV_DIR，
             //     pipeline 里的 ffmpeg 会按旧路径找不到；
@@ -595,7 +595,7 @@ class PrepareQueue {
             // fetch_metadata.py 要用 node 调 Spotify。打包后服务跑在
             // dist\...\runtime\node.exe，PATH 里可能没有 node，所以显式传绝对路径。
             NODE_EXE: process.execPath,
-          },
+          }),
           windowsHide: true,
           stdio: ['ignore', 'pipe', 'pipe'],
         });

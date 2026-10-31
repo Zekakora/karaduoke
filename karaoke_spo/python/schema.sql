@@ -43,6 +43,14 @@ CREATE TABLE IF NOT EXISTS tracks (
   visual_match_reason  TEXT,                       -- 人类可读的评分明细
   visual_matched_at    TEXT,
   visual_candidates    TEXT,                       -- JSON 数组：上次搜索的候选（管理员挑选用）
+  -- 伴奏响度（scripts/measure_loudness.py 用 ffmpeg loudnorm 测得，只测不写音频）
+  -- 播放时前端 Web Audio 按这些数字实时补增益，见 public/karaoke-mixer.js。
+  acc_lufs             REAL,                       -- Integrated LUFS（BS.1770 整体响度）
+  acc_true_peak_dbfs   REAL,                       -- True Peak（dBFS，含采样点间过冲）
+  acc_lra              REAL,                       -- Loudness Range（动态范围）
+  acc_loudness_measured_at TEXT,
+  acc_loudness_version INTEGER,                    -- 测量算法版本，变了要重测
+  acc_loudness_source  TEXT,                       -- 测的哪个文件（accompaniment.mp3）
   -- 本地文件
   audio_path        TEXT,                          -- 原始下载（44.1k WAV）
   audio_bytes       INTEGER,

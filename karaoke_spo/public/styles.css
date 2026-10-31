@@ -492,14 +492,14 @@ html[data-theme="night"] .btn.pin-on { background:#f0b429; color:#241a00; }
 
 /* ---- 曲库管理 ---- */
 /* 曲库页要放 9 列（含新增的「MV」列）和 3~4 个操作按钮。
-   以前宽度锁在 1040px：封面+8 个固定列+gaps 就吃掉 872px，曲目列只剩 ~128px，
-   操作列 236px 放三个按钮会被裁掉（用户反馈"按钮太窄看不到"）。
-   现在：页面放宽到 1600px，各列按内容给足宽度，曲目列是唯一弹性列；
+   曲目列是唯一弹性列，min 压到 150px 收窄曲目栏；
+   操作列固定 264px 并禁止换行，MV / 改词重搜 / 删除（制作中还有「停止」）
+   永远排在一排（按钮左右内边距压到 9px 保证放得下）。
    窗口不够宽时按断点逐级折叠（操作列换到下一行占满）。 */
 .page.compact.library-page { width: min(1600px, 96vw); }
 .lib-table { display:grid; gap:0; }
 /* 列：封面 | 曲目(弹性) | 状态 | 歌词 | 官方 MV | 耗时 | 大小 | 匹配分 | 操作 */
-.lib-row { display:grid; grid-template-columns:52px minmax(200px,1fr) 108px 92px 190px 78px 70px 64px 250px; gap:12px; align-items:center; padding:10px 0; border-bottom:1px solid #edf1f5; font-size:13px; }
+.lib-row { display:grid; grid-template-columns:52px minmax(150px,1fr) 108px 92px 190px 78px 70px 64px 264px; gap:12px; align-items:center; padding:10px 0; border-bottom:1px solid #edf1f5; font-size:13px; }
 .lib-row:last-child { border-bottom:0; }
 .lib-row.lib-head { font-size:11px; font-weight:800; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; padding:6px 0; }
 .lib-row .song-thumb { width:44px; height:44px; }
@@ -515,11 +515,10 @@ html[data-theme="night"] .btn.pin-on { background:#f0b429; color:#241a00; }
 .lib-badge-warn { background:rgba(245,158,11,.16); color:#b45309; }
 /* 「改词重搜」弹窗的结果区要能换行（默认 notice 是单行省略） */
 #lr-result { white-space:pre-wrap; line-height:1.55; }
-/* 操作列放三个按钮（MV / 改词重搜 / 删除，制作中还有「停止」）。
-   以前 flex-wrap:nowrap + 固定宽度会把按钮挤出可见区域；现在允许换行、按钮不压缩，
-   列宽不够时按钮会换到第二行，永远不会被裁掉。 */
-.lib-row .queue-actions { display:flex; gap:6px; flex-wrap:wrap; justify-content:flex-end; }
-.lib-row .queue-actions .btn { flex:0 0 auto; }
+/* 操作列的按钮必须排成一排：nowrap + 左右内边距压到 9px，
+   264px 列宽足够放下「停止 MV 改词重搜 删除」四个按钮。 */
+.lib-row .queue-actions { display:flex; gap:6px; flex-wrap:nowrap; justify-content:flex-end; }
+.lib-row .queue-actions .btn { flex:0 0 auto; padding-left:9px; padding-right:9px; }
 .lib-row.lib-processing { background:linear-gradient(90deg,rgba(255,244,224,.55),transparent 70%); }
 .lib-status-cell { display:flex; flex-direction:column; gap:3px; }
 .lib-badge { display:inline-flex; align-items:center; width:max-content; border-radius:99px; padding:3px 9px; font-size:11px; font-weight:800; background:#eef4f8; color:#52606d; white-space:nowrap; }
@@ -529,7 +528,7 @@ html[data-theme="night"] .btn.pin-on { background:#f0b429; color:#241a00; }
 .lib-error { color:#b42318; }
 /* 中等窗口：把"大小/匹配分"让给操作列和曲目列，其余继续同排 */
 @media (max-width:1400px) {
-  .lib-row { grid-template-columns:48px minmax(170px,1fr) 100px 86px 170px 72px 0 0 232px; gap:10px; }
+  .lib-row { grid-template-columns:48px minmax(130px,1fr) 100px 86px 170px 72px 0 0 250px; gap:10px; }
   .lib-row > :nth-child(7), .lib-row > :nth-child(8) { display:none; } /* 大小 / 匹配分 */
 }
 /* 窄窗口：操作列整行放到最下面，按钮不会再把内容挤没 */
@@ -570,13 +569,36 @@ html[data-theme="night"] .btn.pin-on { background:#f0b429; color:#241a00; }
 .mv-score { display:inline-block; min-width:34px; text-align:right; font-variant-numeric:tabular-nums; font-weight:800; }
 
 /* ---- 曲库页：一键匹配 MV / 歌词 ---- */
-.lib-match { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin: -4px 0 10px; }
+/* search-row 是 stretch 对齐（输入框比 .btn 高几像素），这里也用 stretch，
+   匹配/补测按钮才和同排「刷新/清理残留」完全等高；纯文本子项手动居中。 */
+.lib-match { display:flex; align-items:stretch; gap:10px; flex-wrap:wrap; margin:0 0 10px; }
+.lib-match .song-meta, .lib-match .lib-match-text { align-self:center; }
 .lib-match .lib-match-bar { flex:1 1 160px; height:6px; min-width:120px; border-radius:99px; background:#eef4f8; overflow:hidden; }
 .lib-match .lib-match-bar > i { display:block; height:100%; border-radius:99px; background:linear-gradient(90deg,#2dd4bf,#0d9488); transition:width .4s ease; }
 .lib-match-text { font-size:12px; font-weight:700; color:var(--ink); white-space:nowrap; }
 .lib-match-spinner { width:12px; height:12px; border-radius:50%; border:2px solid rgba(13,148,136,.25); border-top-color:#0d9488; animation: lib-match-spin .8s linear infinite; }
 @keyframes lib-match-spin { to { transform: rotate(360deg); } }
-.lib-match.is-running { padding:8px 10px; border:1px solid var(--line); border-radius:10px; background:var(--paper); }
+/* running 态不再包边框盒（旧版 padding+border 会把这一排撑高，和其它按钮不等高） */
+/* 官方 API 配额用完 / 限流中：按钮**变红但不禁用** —— 点下去弹二次确认，确认后强行重试。
+   （以前这里是禁用 + 一行"今天配额已用完"的文字，DJ 想手动再试一次都没入口。） */
+.lib-match #lib-match-start.is-limited {
+  background:#dc2626; color:#fff; border-color:#dc2626;
+  box-shadow:0 1px 0 rgba(0,0,0,.06);
+}
+.lib-match #lib-match-start.is-limited:hover { background:#b91c1c; border-color:#b91c1c; }
+.lib-match #lib-match-start.is-limited:disabled { opacity:.5; background:#dc2626; }
+.lib-match-flag {
+  display:inline-block; margin-left:6px; padding:1px 6px; border-radius:99px;
+  font-size:11px; font-weight:800; letter-spacing:.02em;
+  background:rgba(255,255,255,.22); color:#fff;
+}
+html[data-theme="night"] .lib-match #lib-match-start.is-limited { background:#b91c1c; border-color:#ef4444; color:#fff; }
+html[data-theme="night"] .lib-match #lib-match-start.is-limited:hover { background:#dc2626; }
+/* 候选列表里标出"这个候选来自哪个源" */
+.mv-source {
+  display:inline-block; margin-left:6px; padding:1px 6px; border-radius:99px;
+  font-size:10px; font-weight:800; background:rgba(13,148,136,.12); color:#0d9488;
+}
 
 /* 「清理残留」弹窗：分组勾选清单 */
 .oc-summary { font-size:13px; font-weight:700; color:var(--ink); margin:10px 0; }

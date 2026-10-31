@@ -103,7 +103,7 @@ const json = (url, opts) => fetch(url, opts).then(async (r) => ({ status: r.stat
       assert.ok(list.length, '曲库为空，无法测试单曲详情');
       const { status, body } = await json(`${BASE}/api/library/tracks/${list[0].spotifyId}`);
       assert.strictEqual(status, 200);
-      assert.deepStrictEqual(Object.keys(body.audio).sort(), ['accompaniment', 'guide', 'original', 'vocals']);
+      assert.deepStrictEqual(Object.keys(body.audio).sort(), ['accompaniment', 'vocals']);
     });
 
     await test('非法 spotifyId → 404', async () => {

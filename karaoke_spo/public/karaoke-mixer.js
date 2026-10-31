@@ -13,6 +13,11 @@
  *      注意 gain=1 时人声与伴奏同为原始电平，相加可能超过 1.0 → 主输出加限幅
  *   3. 暂停/恢复不重建 source（重建会有 seek 延迟），而是 stop 后按 offset 重开
  *   4. 提供 getCurrentTime()，与 <audio>.currentTime 语义一致，便于歌词视图对接
+ *   5. 响度均衡走**独立的 normGain 节点**（见 setLoudness）：
+ *        伴奏 ┐
+ *              ├→ normGain（响度补偿）→ masterGain（DJ 音量）→ limiter → 输出
+ *        人声 ┘
+ *      和音量分成两个节点，DJ 拖音量不会把补偿量冲掉，反之亦然。
  */
 (function (global) {
   'use strict';
@@ -50,6 +55,7 @@
     this.accSource = null;
     this.vocSource = null;
     this.vocGain = null;
+    this.normGain = null;
     this.masterGain = null;
     this.limiter = null;
 
@@ -60,6 +66,11 @@
     this.offsetAtStart = 0;     // 那一时刻对应的曲目内秒数
     this.pausedAt = 0;          // 暂停时停在的曲目内秒数
     this.duration = 0;
+
+    // 响度均衡：测量值 + 生效中的补偿增益（给调试/页面展示用）
+    this.loudness = null;       // { lufs, truePeakDbfs, lra } 或 null
+    this.loudnessGainDb = 0;    // 实际生效的补偿（dB）
+    this.loudnessApplied = false;
 
     this._timer = null;
   }
@@ -72,6 +83,11 @@
     this.vocGain = this.ctx.createGain();
     this.vocGain.gain.value = this.vocalLevel;
 
+    // 响度补偿增益（伴奏响度均衡）。默认 1（=不动），由 setLoudness() 设置。
+    // 与下面的 masterGain（DJ 音量）分开：两者语义不同，混在一个节点上会互相覆盖。
+    this.normGain = this.ctx.createGain();
+    this.normGain.gain.value = 1;
+
     // 主输出 + 限幅（防止伴奏+人声相加削波）
     this.masterGain = this.ctx.createGain();
     this.masterGain.gain.value = 1;
@@ -83,7 +99,8 @@
     comp.attack.value = 0.003;
     comp.release.value = 0.12;
 
-    this.vocGain.connect(this.masterGain);
+    this.vocGain.connect(this.normGain);
+    this.normGain.connect(this.masterGain);
     this.masterGain.connect(comp);
     comp.connect(this.ctx.destination);
     this.limiter = comp;
@@ -133,7 +150,9 @@
 
     const acc = ctx.createBufferSource();
     acc.buffer = this.accBuffer;
-    acc.connect(this.masterGain);
+    // 伴奏也过 normGain：响度补偿要同时作用在伴奏和人声上，
+    // 否则"人声 100% = 原曲"会因为人声没被补偿而和伴奏脱节。
+    acc.connect(this.normGain);
 
     const voc = ctx.createBufferSource();
     voc.buffer = this.vocBuffer;
@@ -278,15 +297,101 @@
     this.masterGain.gain.setTargetAtTime(Math.max(0, Math.min(1, Number(level))), now, 0.03);
   };
 
+  /**
+   * 算出这首伴奏应该补多少 dB（**纯函数**，便于单测）。
+   *
+   * @param {{lufs: number, truePeakDbfs?: number|null}} measured  ffmpeg 测出来的值
+   * @param {object} cfg  Admin Settings 里的响度配置
+   * @param {boolean} cfg.enabled        自动均衡总开关
+   * @param {number} cfg.targetLufs      目标响度（LUFS，负数）
+   * @param {number} cfg.truePeakCeiling True Peak 上限（dBFS，负数）
+   * @param {number} cfg.maxGainDb       最多补多少 dB
+   * @param {number} cfg.maxCutDb        最多压多少 dB
+   * @returns {{gainDb: number, gain: number, limitedBy: string|null, reason: string}}
+   *
+   * 三步：
+   *   1. 响度对齐：gainDb = target − measured（测量值低于目标就补正增益）
+   *   2. 真峰值保护：如果补完之后真峰值会超过上限，就把增益**压回去**。
+   *      响度（平均能量）和真峰值（瞬时最大）是两回事 —— 一首很"平"的歌
+   *      LUFS 可能很低但峰值已经贴着 0dBFS，只按 LUFS 补会直接削波。
+   *   3. 范围钳制：±maxGain/maxCut，避免把安静的现场录音整个放大（底噪一起上来）。
+   */
+  Mixer.computeLoudnessGain = function computeLoudnessGain(measured, cfg) {
+    const conf = cfg || {};
+    const enabled = conf.enabled !== false;
+    const target = Number(conf.targetLufs);
+    const ceiling = Number(conf.truePeakCeiling);
+    const maxGain = Number(conf.maxGainDb);
+    const maxCut = Number(conf.maxCutDb);
+    const safeTarget = Number.isFinite(target) ? target : -18;
+    const safeCeiling = Number.isFinite(ceiling) ? ceiling : -1;
+    const safeMaxGain = Number.isFinite(maxGain) ? Math.max(0, maxGain) : 12;
+    const safeMaxCut = Number.isFinite(maxCut) ? Math.max(0, maxCut) : 12;
+
+    const lufs = measured ? Number(measured.lufs) : NaN;
+    if (!enabled || !Number.isFinite(lufs)) {
+      return { gainDb: 0, gain: 1, limitedBy: null, reason: !enabled ? '未启用自动均衡' : '这首歌没有响度数据' };
+    }
+
+    let gainDb = safeTarget - lufs;
+    let limitedBy = null;
+
+    // 真峰值保护：measured.truePeakDbfs + gainDb 不能超过 ceiling
+    const peak = measured.truePeakDbfs === null || measured.truePeakDbfs === undefined
+      ? NaN : Number(measured.truePeakDbfs);
+    if (Number.isFinite(peak)) {
+      const peakLimited = safeCeiling - peak;
+      if (peakLimited < gainDb) {
+        gainDb = peakLimited;
+        limitedBy = 'true-peak';
+      }
+    }
+
+    if (gainDb > safeMaxGain) { gainDb = safeMaxGain; limitedBy = 'max-gain'; }
+    if (gainDb < -safeMaxCut) { gainDb = -safeMaxCut; limitedBy = 'max-cut'; }
+
+    return {
+      gainDb: Math.round(gainDb * 100) / 100,
+      gain: Math.pow(10, gainDb / 20),
+      limitedBy,
+      reason: limitedBy === 'true-peak'
+        ? `真峰值上限 ${safeCeiling} dBFS 挡住了（再补会削波）`
+        : limitedBy === 'max-gain' ? `已达最大增益 +${safeMaxGain} dB`
+          : limitedBy === 'max-cut' ? `已达最大衰减 −${safeMaxCut} dB`
+            : `响度对齐到 ${safeTarget} LUFS`,
+    };
+  };
+
+  /**
+   * 设置这首伴奏的响度测量值 + 均衡配置，实时算出生效的增益。
+   *
+   * 可以在播放中调用（换歌 / DJ 改设置都会走这里）：用 setTargetAtTime 做 40ms
+   * 平滑，避免"啪"的一声。
+   */
+  Mixer.prototype.setLoudness = function setLoudness(measured, cfg) {
+    this.loudness = measured && Number.isFinite(Number(measured.lufs)) ? measured : null;
+    const result = Mixer.computeLoudnessGain(this.loudness, cfg);
+    this.loudnessGainDb = result.gainDb;
+    this.loudnessLimitation = result.limitedBy;
+    this.loudnessReason = result.reason;
+    this.loudnessApplied = Boolean(this.loudness) && result.gainDb !== 0;
+    if (!this.ctx || !this.normGain) return result;
+    const now = this.ctx.currentTime;
+    this.normGain.gain.cancelScheduledValues(now);
+    this.normGain.gain.setTargetAtTime(result.gain, now, 0.04);
+    return result;
+  };
+
   Mixer.prototype.destroy = function destroy() {
     this._stopTimer();
     this._stopSources();
     // 不 close 共享 AudioContext：下首歌还要继续用。close() 后新建的 context
     // 会重新触发浏览器自动播放策略，导致每次切歌都要再点一下。
-    for (const node of [this.vocGain, this.masterGain, this.limiter]) {
+    for (const node of [this.vocGain, this.normGain, this.masterGain, this.limiter]) {
       try { node?.disconnect(); } catch { /* ignore */ }
     }
     this.vocGain = null;
+    this.normGain = null;
     this.masterGain = null;
     this.limiter = null;
     this.ctx = null;

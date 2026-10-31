@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sqlite3
 import sys
@@ -26,7 +27,10 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
-DB_PATH = ROOT / "data" / "library.db"
+# 曲库位置与 Node 侧（lib/library-db.js）保持一致：优先 LIBRARY_DB 环境变量，
+# 否则回退到 <项目根>/data/library.db。否则 Python 侧（测量响度、finalize）会写进
+# 另一个文件，Node 读不到 —— 曾经就让响度数据"写了但永远不显示"。
+DB_PATH = Path(os.environ.get("LIBRARY_DB") or (ROOT / "data" / "library.db"))
 SCHEMA = Path(__file__).resolve().parent / "schema.sql"
 
 # 状态机：new -> resolving -> resolved -> downloading -> downloaded -> separating -> separated
@@ -91,6 +95,14 @@ _MIGRATIONS: dict[str, dict[str, str]] = {
         "visual_match_reason": "TEXT",
         "visual_matched_at": "TEXT",
         "visual_candidates": "TEXT",
+        # 伴奏响度（LUFS / True Peak / LRA），由 scripts/measure_loudness.py 用 ffmpeg 测出。
+        # 只存测量结果，不改动音频文件 —— 播放时的增益补偿在前端 Web Audio 里实时做。
+        "acc_lufs": "REAL",
+        "acc_true_peak_dbfs": "REAL",
+        "acc_lra": "REAL",
+        "acc_loudness_measured_at": "TEXT",
+        "acc_loudness_version": "INTEGER",
+        "acc_loudness_source": "TEXT",
     },
 }
 
@@ -491,6 +503,82 @@ def count_tracks(conn: sqlite3.Connection, status: str | None = None) -> int:
     if status:
         return int(conn.execute("SELECT COUNT(*) AS n FROM tracks WHERE status = ?", (status,)).fetchone()["n"])
     return int(conn.execute("SELECT COUNT(*) AS n FROM tracks").fetchone()["n"])
+
+
+# ---------------------------------------------------------------- 伴奏响度
+#
+# 与 update_visual / update_source 一样是**独立的一段**：它只描述"这首伴奏听起来多响"，
+# 不参与音频处理，也不改任何文件。播放端（Web Audio GainNode）按需用它算增益。
+LOUDNESS_COLUMNS = (
+    "acc_lufs",
+    "acc_true_peak_dbfs",
+    "acc_lra",
+    "acc_loudness_measured_at",
+    "acc_loudness_version",
+    "acc_loudness_source",
+)
+
+
+def get_loudness(conn: sqlite3.Connection, spotify_id: str) -> dict[str, Any] | None:
+    """读一首歌的伴奏响度；没测过返回 None（老库缺列时也返回 None）。"""
+    try:
+        row = conn.execute(
+            f"SELECT {', '.join(LOUDNESS_COLUMNS)} FROM tracks WHERE spotify_id = ?",
+            (spotify_id,),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return None  # 还没迁移出这几列
+    if row is None:
+        return None
+    d = dict(row)
+    return {
+        "lufs": d.get("acc_lufs"),
+        "truePeakDbfs": d.get("acc_true_peak_dbfs"),
+        "lra": d.get("acc_lra"),
+        "measuredAt": d.get("acc_loudness_measured_at"),
+        "version": d.get("acc_loudness_version"),
+        "source": d.get("acc_loudness_source"),
+    }
+
+
+def update_loudness(
+    conn: sqlite3.Connection,
+    spotify_id: str,
+    values: dict[str, Any],
+    *,
+    force: bool = False,
+) -> bool:
+    """写入伴奏响度测量结果。返回是否真的写了。
+
+    force=False（默认）：已经有测量值时**跳过**（返回 False），
+    免得每首歌每次跑流水线都重测一遍（一次 ffmpeg 分析几秒钟）。
+    """
+    if not force:
+        existing = get_loudness(conn, spotify_id)
+        if existing and existing.get("lufs") is not None:
+            return False
+    try:
+        cur = conn.execute(
+            """UPDATE tracks
+                  SET acc_lufs=?, acc_true_peak_dbfs=?, acc_lra=?,
+                      acc_loudness_measured_at=?, acc_loudness_version=?, acc_loudness_source=?,
+                      updated_at=?
+                WHERE spotify_id=?""",
+            (
+                values.get("lufs"),
+                values.get("true_peak_dbfs"),
+                values.get("lra"),
+                now(),
+                values.get("version"),
+                values.get("source"),
+                now(),
+                spotify_id,
+            ),
+        )
+    except sqlite3.OperationalError:
+        return False  # 老库还没这几列（理论上迁移会先跑，兜个底）
+    conn.commit()
+    return cur.rowcount > 0
 
 
 # ---------------------------------------------------------------- stems

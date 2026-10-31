@@ -8,7 +8,7 @@
 一个**自包含**的局域网卡拉OK控制台。音源是本地分离好的曲目：
 
 - 搜索走**本地 SQLite 曲库**
-- 每首歌有 4 个 MP3：伴奏 / 人声 / 引导 / 原曲
+- 每首歌只存 2 个 MP3：伴奏 / 人声（原唱 / 伴奏 / 人声导唱三种模式由 Web Audio 实时混音）
 - 播放时用 **Web Audio 双源混音**，人声强度 0–100% 连续可调
 - 画面是仿 Apple Music 的歌词页，支持**逐字高亮**（QQ 音乐 QRC）
 
@@ -36,6 +36,7 @@ karaoke_spo\
 │   ├── library-db.js          曲库访问（node:sqlite，含官方 MV 读写）
 │   ├── official-mv.js         官方 MV Resolver（搜索 / 评分 / 状态机）
 │   ├── youtube.js             YouTube Data API 唯一客户端（配额 / 缓存）
+│   ├── ytmusic.js             YouTube Music（ytmusicapi）候选源，**免配额**
 │   ├── qrc-decrypt.js         QQ QRC 逐字歌词解密
 │   ├── qq-lyrics.js           歌词源
 │   └── spotify.js             Spotify 元数据
@@ -47,6 +48,7 @@ karaoke_spo\
 ├── scripts\
 │   ├── pipeline.py            流水线（metadata/download/lyrics/separate/finalize/cleanup）
 │   ├── fetch_audio.py         YouTube 匹配下载 → 44.1k WAV（只管音频，不下视频）
+│   ├── ytmusic_mv.py          官方 MV 候选搜索（ytmusicapi，免配额；stdin/stdout JSON）
 │   ├── fetch_metadata.py      Spotify 元数据 + 封面
 │   ├── fetch_lyrics.py        lrclib 歌词
 │   └── finalize_track.py      混音 + MP3 编码
@@ -55,7 +57,7 @@ karaoke_spo\
 │   ├── bin\ffmpeg.exe         媒体工具
 │   └── library\               下载的原始 WAV
 ├── assets\
-│   ├── output\library\<id>\   每首歌 4 个 MP3
+│   ├── output\library\<id>\   每首歌 2 个 MP3（accompaniment.mp3 / vocals.mp3）
 │   ├── covers\<id>.jpg        专辑封面
 │   └── lyrics\<id>.lrc        歌词文件
 ├── .cache\                    torch / huggingface 模型缓存
@@ -77,7 +79,7 @@ python\.venv-xpu\Scripts\python.exe scripts\pipeline.py `
 
 `--title` 可省略——歌名、歌手、专辑、时长、封面全部由 Spotify API 提供。
 
-各步骤幂等，重复跑不会重做已完成的部分。cleanup 会在确认 4 个 MP3 合格后
+各步骤幂等，重复跑不会重做已完成的部分。cleanup 会在确认 2 个 MP3 合格后
 删除音频处理输入（data/library/<videoId>.wav）和下载中间文件；--keep-audio 可保留。
 
 官方 MV 不在这条流水线里：它由 Node 侧 lib/official-mv.js 单独匹配，
@@ -88,8 +90,9 @@ python\.venv-xpu\Scripts\python.exe scripts\pipeline.py `
 ```powershell
 node tests\playback-lyrics.test.js        # 16 passed
 node tests\library-mode.test.js           # 12 passed
-node tests\official-mv.test.js            # 23 passed（官方 MV 评分 / 状态机）
+node tests\official-mv.test.js            # 25 passed（官方 MV 评分 / 状态机）
 node tests\official-mv-api.test.js        # 14 passed（MV 管理接口）
+node tests\ytmusic-mv.test.js             # 13 passed（YouTube Music 免配额源 / 两段式兜底）
 node tests\video-lyrics-mv.test.js        # 20 passed（视频模式播放器）
 ..\env\python\Scripts\python.exe tests\test_library.py            # 11 passed
 ..\env\python\Scripts\python.exe tests\test_pipeline_cleanup.py   # 10 passed（临时文件清理）
@@ -97,14 +100,15 @@ node tests\video-lyrics-mv.test.js        # 20 passed（视频模式播放器）
 
 ## 关键设计
 
-### 为什么只存 4 个 MP3
+### 为什么只存 2 个 MP3
 
 Demucs 四轨严格加性分解（`drums+bass+other+vocals ≈ mix`），所以：
 
-- `accompaniment` = 三轨求和
-- 播放时 `伴奏 + 人声 × 强度` 实时混音
+- `accompaniment` = 三轨求和，存为 `accompaniment.mp3`
+- `vocals` = 人声轨，存为 `vocals.mp3`
+- 播放时由 **Web Audio 实时混音**得到三种模式：原唱（`伴奏 + 人声×100%`）、伴奏（`人声×0%`）、人声导唱（`人声×25%≈-12dB`），不落任何预混成品
 
-存 4 轨 WAV 要 634.6 MB，存 4 个 MP3 只要 54.9 MB，**省 91%**。
+存 4 轨 WAV 要 634.6 MB，只存 2 个 MP3 只要约 27 MB，**省 95%+**；更关键的是三种播放模式都在前端合成，后端无需为每种模式各存一份。
 
 ### 为什么必须用 Web Audio
 
@@ -124,9 +128,25 @@ Demucs 四轨严格加性分解（`drums+bass+other+vocals ≈ mix`），所以�
 | `playbackMode` | `video` / `lyrics`（DJ 可切） | video = YouTube 官方 MV（静音）+ 两行歌词；lyrics = 仿 Apple Music |
 | `visual_video_id` | 由 `lib/official-mv.js` 匹配 | 官方 MV 的 YouTube videoId；与音频来源 `source_video_id` 无关 |
 
+### 官方 MV 的两个候选源（为什么要有第二个）
+
+官方 Data API 的 `search.list` 一次 100 单位、每天 10,000 单位，批量匹配很容易打光。
+所以 **YouTube Music（ytmusicapi）优先、官方 Data API 兜底**：
+
+```
+① scripts/ytmusic_mv.py（Python 子进程）→ 无每日配额，且结果带 videoType（官方 MV / Art track / 用户上传）
+② lib/youtube.js（官方 Data API）        → ① 拿不到候选时才用
+```
+
+官方 API 配额打满时，曲库页「一键匹配」按钮会变**红色**（不是禁用），点下去弹二次确认，
+确认后强行重试 —— 因为 ① 不占配额，这时依然能匹配成功。
+`KARAOKE_YTMUSIC=0` 可关掉①，退回纯官方 API 行为。
+
 ## 已知边界
 
 1. **MV 是 YouTube 在线播放**：断网 / 视频下架 / 不允许嵌入时退回模糊专辑封面（K 歌不受影响）
+1. **ytmusicapi 需要 Python 包**：`env\python\Scripts\python.exe -m pip install ytmusicapi`。
+   没装时日志会提示，并自动只用官方 API（曲库页能看到 `ytmusic.available=false`）
 2. **封面是 Spotify 专辑图**（640×640）
 3. **逐字歌词依赖 QQ 音乐**，会限流；拿到后落盘缓存
 4. **分离需要 XPU**（Intel Arc iGPU），CPU 下 RTF 慢 10 倍以上

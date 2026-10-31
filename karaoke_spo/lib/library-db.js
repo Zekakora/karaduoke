@@ -147,6 +147,33 @@ function pickCover(track) {
   return track.album_art || null;
 }
 
+/** 曲库是否已经迁出伴奏响度的列（老库可能在服务运行期间被 Python 侧补上） */
+function hasLoudnessColumns(conn = open()) {
+  if (!conn) return false;
+  try {
+    const cols = conn.prepare('PRAGMA table_info(tracks)').all().map((c) => c.name);
+    return cols.includes('acc_lufs');
+  } catch {
+    return false;
+  }
+}
+
+/** 响度列 → 前端形状。没测过时返回 null（前端据此显示"—"并跳过自动均衡）。 */
+function loudnessFromRow(row) {
+  const lufs = row.acc_lufs;
+  if (lufs === null || lufs === undefined || !Number.isFinite(Number(lufs))) return null;
+  const peak = row.acc_true_peak_dbfs;
+  const lra = row.acc_lra;
+  return {
+    lufs: Number(lufs),
+    truePeakDbfs: Number.isFinite(Number(peak)) ? Number(peak) : null,
+    lra: Number.isFinite(Number(lra)) ? Number(lra) : null,
+    measuredAt: row.acc_loudness_measured_at || null,
+    version: Number.isFinite(Number(row.acc_loudness_version)) ? Number(row.acc_loudness_version) : null,
+    source: row.acc_loudness_source || null,
+  };
+}
+
 function toPublic(row) {
   return {
     spotifyId: row.spotify_id,
@@ -168,6 +195,8 @@ function toPublic(row) {
     // 老库没有这一列时调用方会拿到 undefined → 走 pending 兜底。
     visualVideoId: row.visual_video_id || null,
     visualMatchStatus: row.visual_match_status || 'pending',
+    // 伴奏响度（ffmpeg 测得，只测不改音频）。老库/没测过 → null，前端跳过自动均衡。
+    loudness: loudnessFromRow(row),
   };
 }
 
@@ -198,10 +227,14 @@ function listTracks(opts = {}) {
   const visualCols = hasVisualColumns(conn)
     ? 't.visual_video_id, t.visual_match_status'
     : "NULL AS visual_video_id, 'pending' AS visual_match_status";
+  const loudCols = hasLoudnessColumns(conn)
+    ? 't.acc_lufs, t.acc_true_peak_dbfs, t.acc_lra, t.acc_loudness_measured_at, t.acc_loudness_version, t.acc_loudness_source'
+    : 'NULL AS acc_lufs, NULL AS acc_true_peak_dbfs, NULL AS acc_lra, NULL AS acc_loudness_measured_at, NULL AS acc_loudness_version, NULL AS acc_loudness_source';
   const sql = `
     SELECT t.spotify_id, t.title, t.artists, t.album, t.duration_ms, t.album_art,
            t.album_art_path, t.release_date, t.popularity, t.match_score, t.status,
            ${visualCols},
+           ${loudCols},
            s.vocals_path IS NOT NULL AND s.vocals_path <> '' AS has_vocals,
            s.no_vocals_path IS NOT NULL AND s.no_vocals_path <> '' AS has_accompaniment
       FROM tracks t
@@ -235,12 +268,16 @@ function getTrack(spotifyId) {
   const visualCols = hasVisualColumns(conn)
     ? 't.visual_video_id, t.visual_match_status'
     : "NULL AS visual_video_id, 'pending' AS visual_match_status";
+  // 大屏播放要用响度做实时增益补偿，所以单曲详情必须带这几列
+  const loudCols = hasLoudnessColumns(conn)
+    ? 't.acc_lufs, t.acc_true_peak_dbfs, t.acc_lra, t.acc_loudness_measured_at, t.acc_loudness_version, t.acc_loudness_source'
+    : 'NULL AS acc_lufs, NULL AS acc_true_peak_dbfs, NULL AS acc_lra, NULL AS acc_loudness_measured_at, NULL AS acc_loudness_version, NULL AS acc_loudness_source';
   let row;
   try {
     row = conn.prepare(`
       SELECT t.spotify_id, t.title, t.artists, t.album, t.duration_ms, t.album_art,
              t.album_art_path, t.release_date, t.popularity, t.match_score, t.status,
-             t.source_video_id, ${visualCols},
+             t.source_video_id, ${visualCols}, ${loudCols},
              s.vocals_path IS NOT NULL AND s.vocals_path <> '' AS has_vocals,
              s.no_vocals_path IS NOT NULL AND s.no_vocals_path <> '' AS has_accompaniment
         FROM tracks t LEFT JOIN stems s ON s.track_id = t.id
@@ -250,11 +287,10 @@ function getTrack(spotifyId) {
   }
   if (!row) return null;
   const out = toPublic(row);
+  // 只暴露伴奏 + 人声两条轨：原唱/伴奏/人声导唱三种模式由前端实时混音，不落盘。
   out.audio = out.ready ? {
     accompaniment: `/media/output/library/${id}/accompaniment.mp3`,
     vocals: `/media/output/library/${id}/vocals.mp3`,
-    guide: `/media/output/library/${id}/guide.mp3`,
-    original: `/media/output/library/${id}/original.mp3`,
   } : null;
   // 官方 MV 的完整元数据（画面来源，与 sourceVideoId 无关）
   out.visual = getVisual(id) || visualFallback();
@@ -464,6 +500,10 @@ function adminTracks(opts = {}) {
     : `NULL AS visual_video_id, 'pending' AS visual_match_status, NULL AS visual_match_score,
        NULL AS visual_video_title, NULL AS visual_channel_title, NULL AS visual_duration,
        NULL AS visual_match_reason, NULL AS visual_matched_at`;
+  // 曲库页要显示"响度 / 补偿增益"，所以管理列表也带上
+  const loudCols = hasLoudnessColumns(conn)
+    ? 't.acc_lufs, t.acc_true_peak_dbfs, t.acc_lra, t.acc_loudness_measured_at, t.acc_loudness_version, t.acc_loudness_source'
+    : 'NULL AS acc_lufs, NULL AS acc_true_peak_dbfs, NULL AS acc_lra, NULL AS acc_loudness_measured_at, NULL AS acc_loudness_version, NULL AS acc_loudness_source';
   let rows;
   try {
     // 每首歌：tracks 行 + 最新 stems 行 + 最后一次失败原因（jobs 表）+ 歌词情况 + 官方 MV
@@ -473,6 +513,7 @@ function adminTracks(opts = {}) {
              t.duration_ms, t.audio_bytes, t.audio_path,
              t.source_video_id, t.source_url, t.source_title, t.created_at, t.updated_at,
              ${visualCols},
+             ${loudCols},
              s.model, s.device, s.rtf, s.processing_s, s.input_duration_s, s.out_dir,
              s.vocals_path, s.no_vocals_path,
              s.vocals_path IS NOT NULL AND s.vocals_path <> '' AS has_vocals,
@@ -546,6 +587,8 @@ function adminTracks(opts = {}) {
       visualDuration: row.visual_duration ?? null,
       visualMatchReason: row.visual_match_reason || null,
       visualMatchedAt: row.visual_matched_at || null,
+      // 伴奏响度（LUFS / 真峰值），曲库页「响度」列与前端实时均衡都用它
+      loudness: loudnessFromRow(row),
       createdAt: row.created_at || null,
       updatedAt: row.updated_at || null,
     };
@@ -880,5 +923,7 @@ module.exports = {
   open, close, deleteTrack, listTracks, getTrack, getLyrics, summary, adminTracks, scanOrphans, purgeFiles,
   // 官方 MV（visualVideoId）：读写与状态常量，见 lib/official-mv.js
   getVisual, getVisualRow, updateVisual, hasVisualColumns, visualFallback, VISUAL_STATUSES,
+  // 伴奏响度（ffmpeg 测得；播放端用它算实时增益）
+  hasLoudnessColumns, loudnessFromRow,
   STATUS_TEXT, resolvePath, songKeySupported: true,
 };

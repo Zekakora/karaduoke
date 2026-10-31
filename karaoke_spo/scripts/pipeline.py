@@ -17,8 +17,8 @@
 临时文件的生命周期（见 `step_cleanup`）：
   1. `download` 把音频来源下载/转成 `data/library/<videoId>.wav`（Demucs 的输入）；
   2. `separate` 读它，产出 4 轨 WAV 到 `assets/output/library/<spotifyId>/`；
-  3. `finalize` 把 4 轨编成终端用户要的 4 个 MP3，并清掉中间轨；
-  4. `cleanup`（**默认在最后自动跑**）确认 4 个 MP3 都合格后，才删掉
+  3. `finalize` 把 4 轨编成终端用户要的 2 个 MP3（伴奏 + 人声），并清掉中间轨；
+  4. `cleanup`（**默认在最后自动跑**）确认 2 个 MP3 都合格后，才删掉
      `data/library/<videoId>.wav` 这个音频处理输入，以及下载阶段的中间文件。
      确认不了（MP3 缺失 / 太小 / 读不出来）就**什么都不删**，把情况记进 jobs。
   `--keep-audio` 可以关掉这一步（排查问题时用）。任何清理失败都只记日志，
@@ -188,18 +188,34 @@ def _separate_wait_log(elapsed: float) -> None:
     print(f"[i] 等待 GPU 分离锁 {int(elapsed)}s…（另一首歌正在分离）", flush=True)
 
 
+# 分离出的 4 轨；finalize 依赖它们。曲库里可能有 stems 记录但文件已被清理/删除，
+# 所以"跳过分离"必须以文件实际存在为准，不能只看数据库记录。
+STEM_FILES = ("drums", "bass", "other", "vocals")
+
+
+def _has_all_stems(stems_dir: Path) -> bool:
+    return all(
+        (stems_dir / f"{name}.wav").is_file() or (stems_dir / f"{name}.mp3").is_file()
+        for name in STEM_FILES
+    )
+
+
 def step_separate(conn, track_id: int, args) -> dict:
     row = library.get_track(conn, args.spotify_id)
     audio = row.get("audio_path") if row else None
     if not audio or not Path(audio).exists():
         print("[x] 没有音频，无法分离")
         return {"error": "no audio"}
+    out_dir = STEMS_DIR / args.spotify_id
     existing = [s for s in library.get_stems(conn, track_id) if s["model"] == args.model]
     if existing and not getattr(args, "force_separate", False):
-        print(f"[=] 已有 {args.model} 分离结果，跳过（RTF={existing[0]['rtf']}）")
-        return {"skipped": True, "rtf": existing[0]["rtf"]}
-
-    out_dir = STEMS_DIR / args.spotify_id
+        if _has_all_stems(out_dir):
+            print(f"[=] 已有 {args.model} 分离结果，跳过（RTF={existing[0]['rtf']}）")
+            return {"skipped": True, "rtf": existing[0]["rtf"]}
+        # 典型场景：finalize 清理到一半被中断（或 safe-delete 拦截），
+        # 留下 drums/other/vocals 但缺 bass.wav。此时 DB 记录还在，
+        # 旧逻辑会跳过分离，finalize 再报 "缺少 bass.wav" rc=3。
+        print(f"[!] 曲库有 {args.model} 记录，但中间轨不完整（{out_dir}），重新分离")
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # 跨进程串行：同一时刻只让一个进程占 GPU。等待时不要把 torch/demucs
@@ -282,13 +298,12 @@ def step_metadata_pre(conn, args) -> dict:
 
 
 def step_finalize(conn, track_id: int, args) -> dict:
-    """把 4 轨分离结果整理成最终的 4 个 MP3，并清理中间产物。
+    """把 4 轨分离结果整理成最终的 2 个 MP3，并清理中间产物。
 
-    产物（每首歌只有这 4 个）：
+    产物（每首歌只有这 2 个）：
       accompaniment.mp3  纯伴奏
       vocals.mp3         纯人声
-      guide.mp3          伴奏 + 人声 -12dB
-      original.mp3       原曲
+    原唱 / 伴奏 / 人声导唱三种播放模式由前端实时混音，不落盘（见 finalize_track.py）。
     """
     import finalize_track
 
@@ -304,7 +319,7 @@ def step_finalize(conn, track_id: int, args) -> dict:
     if rc != 0:
         library.log_job(conn, track_id, "finalize", "failed", f"rc={rc}", None)
         return {"error": f"rc={rc}"}
-    return {"ok": True, "files": [f"{n}.mp3" for n in ("accompaniment", "vocals", "guide", "original")]}
+    return {"ok": True, "files": [f"{n}.mp3" for n in ("accompaniment", "vocals")]}
 
 
 # ---------------------------------------------------------------- 临时文件清理（成功收尾）
@@ -312,18 +327,18 @@ def step_finalize(conn, track_id: int, args) -> dict:
 # 涉及的资源有三类，**不要混淆**：
 #   1. 音频处理输入 `data/library/<videoId>.wav`：download 产出、separate 消费。
 #      成片成功之后就不再需要，可以删（本文件的 step_cleanup）。
-#   2. 最终交付的 4 个 MP3（assets/output/library/<spotifyId>/）：**永久保留**，
+#   2. 最终交付的 2 个 MP3（assets/output/library/<spotifyId>/）：**永久保留**，
 #      KaraokeMixer 播放的就是它们。任何清理逻辑都不许碰。
 #   3. 官方 MV：根本不下载，来自 YouTube IFrame（lib/official-mv.js）。
-FINAL_MP3_NAMES = ("accompaniment.mp3", "vocals.mp3", "guide.mp3", "original.mp3")
+FINAL_MP3_NAMES = ("accompaniment.mp3", "vocals.mp3")
 # 一个 320kbps 的 MP3 每秒约 40KB；1 秒的歌也有 ~40KB。小于 16KB 的几乎必然是空文件/失败产物。
 MIN_MP3_BYTES = 16 * 1024
 
 
 def verify_final_mp3s(out_dir: Path) -> dict:
-    """检查 4 个最终 MP3 是否都在、非空、真能读。
+    """检查 2 个最终 MP3 是否都在、非空、真能读。
 
-    只做**基础**检查（存在 / 大小 / 文件头），不重新解码整首歌 —— 解码 4 个 320k MP3
+    只做**基础**检查（存在 / 大小 / 文件头），不重新解码整首歌 —— 解码 2 个 320k MP3
     要几秒，而这里只是确认"文件是好的才删输入"，不是质检。
     MP3 帧头：ID3v2（"ID3"）或 MPEG 帧同步（0xFF 且第二个字节高 3 位全 1）。
 
@@ -364,7 +379,7 @@ def collect_temp_files(conn, track_id: int, args) -> list[Path]:
          （同一段音频被不同曲目引用），所以删之前还要确认没有别的曲目在用它。
       * .tmp/spotdl-out/<spotifyId>.wav 等下载中间产物的**目录**，仅当它为空时删目录本身。
       * assets/output/library/<spotifyId>/video.mp4 —— 旧版本管线留下的本地背景视频；
-        视频模式已经改成官方 MV，本地背景 MP4 不再需要（有 4 个 MP3 就能删）。
+        视频模式已经改成官方 MV，本地背景 MP4 不再需要（有 2 个 MP3 就能删）。
     """
     upstream = AUDIO_IN_DIR
     stems_dir = STEMS_DIR / args.spotify_id
@@ -409,10 +424,13 @@ def collect_temp_files(conn, track_id: int, args) -> list[Path]:
             continue
         out.append(cand)
 
-    # 3) 旧版本留下的本地背景视频（只在 MP3 确认合格之后才会走到这里）
-    legacy_video = stems_dir / "video.mp4"
-    if safe(legacy_video.resolve(), STEMS_DIR) and legacy_video.exists():
-        out.append(legacy_video)
+    # 3) 旧版本留下的冗余成品（只在最终 MP3 校验合格之后才会走到这里）
+    #    - video.mp4：旧版本地背景视频，已改用官方 MV
+    #    - guide.mp3 / original.mp3：改为前端实时混音后不再生成，清掉旧文件省空间
+    for legacy in ("video.mp4", "guide.mp3", "original.mp3"):
+        cand = stems_dir / legacy
+        if safe(cand.resolve(), STEMS_DIR) and cand.exists():
+            out.append(cand)
 
     return out
 
@@ -421,7 +439,7 @@ def step_cleanup(conn, track_id: int, args) -> dict:
     """成功收尾：确认最终产物合格 → 删除音频处理输入与下载中间文件。
 
     安全规则（每一条都独立生效，任何一条不满足就不删）：
-      A. **先校验，后删除**：4 个最终 MP3 必须都在、非空、文件头正确；
+      A. **先校验，后删除**：2 个最终 MP3 必须都在、非空、文件头正确；
          校验不过就什么都不删 —— 这时唯一的音频输入可能就是重试/恢复的唯一依据。
       B. **只在成功路径调用**：main() 只在 separate/finalize 都成功后才跑这一步。
       C. **只删本曲目的文件**：路径必须落在 data/library/ 或本曲目的输出目录内，
@@ -636,7 +654,7 @@ def main() -> int:
     # 只在"这次真的跑到了 finalize 而且成功"时才清：
     #   * 只跑 --steps download 的调试流程不能清（音频输入是下一步的输入）；
     #   * 任何一步失败都不能清（失败时那个 .wav 往往是唯一能重试的输入）；
-    #   * step_cleanup 自己还会再校验一遍 4 个 MP3 是否合格。
+    #   * step_cleanup 自己还会再校验一遍 2 个 MP3 是否合格。
     if "cleanup" in steps:
         finalize_ok = bool(result.get("finalize", {}).get("ok"))
         if not finalize_ok:

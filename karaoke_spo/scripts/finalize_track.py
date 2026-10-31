@@ -1,21 +1,19 @@
 # -*- coding: utf-8 -*-
-"""把一首歌的分离结果整理成最终产物：**只保留 4 个 MP3**。
+"""把一首歌的分离结果整理成最终产物：**只保留 2 个 MP3**。
 
-最终产物（就是这 4 个，不存别的）：
+最终产物（就是这 2 个，不存别的）：
   accompaniment.mp3  纯伴奏 = drums + bass + other（不单独存 4 轨）
   vocals.mp3         纯人声
-  guide.mp3          引导版 = 伴奏 + 人声 -12dB（学新歌用）
-  original.mp3       原曲 = 四轨求和 = 原始混音
 
-中间产物（分离出的 4 轨 WAV、实验用的对比文件）**默认全部删除**，
+中间产物（分离出的 4 轨 WAV、旧的 guide/original 成品、实验用的对比文件）**默认全部删除**，
 需要复查时加 --keep-intermediate。
 
-为什么这 4 个就够：
+为什么只存 2 个就够：
   - 纯伴奏：KTV 要的
-  - 纯人声：可以做和声/对唱/参考
-  - 引导版：原唱小声带唱
-  - 原曲：A/B 对照、需要原唱全开时
-  播放时根据"原唱音量"滑块在这几轨之间切换/混音，不需要 4 轨原件。
+  - 纯人声：可以做和声/对唱/参考，也用于实时混音
+  原唱 / 伴奏 / 人声导唱三种播放模式**全部由前端 Web Audio 实时混音**实现
+  （伴奏固定，人声走独立 GainNode，滑块 0~1 控制人声强度：
+   1.0 = 原唱、0 = 伴奏、~0.25(-12dB) = 人声导唱），不落任何预混成品文件。
 
 用法:
     python\\.venv-xpu\\Scripts\\python.exe scripts\\finalize_track.py --spotify-id <id>
@@ -38,8 +36,10 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import gpu_lock  # noqa: E402
 FFMPEG = Path(os.environ.get("KARAOKE_FFMPEG") or (Path(os.environ.get("KARAOKE_ENV_DIR") or (ROOT / "env")) / "bin" / "ffmpeg.exe"))
 
-# 最终保留的 4 个文件
-FINAL_NAMES = ("accompaniment", "vocals", "guide", "original")
+# 最终保留的 2 个文件（其余播放模式前端实时混音，不落盘）
+FINAL_NAMES = ("accompaniment", "vocals")
+# 历史版本曾落盘的成品，现在不再生成；成片/清理时一并删掉，避免占空间。
+LEGACY_OUTPUT_NAMES = ("guide", "original")
 # 分离出来的中间 WAV
 SOURCE_STEMS = ("drums", "bass", "other", "vocals")
 # 实验/对比产物，一律清理
@@ -99,6 +99,7 @@ def _cleanup_intermediates(stems_dir: Path) -> list[str]:
     """
     final_mp3 = {f"{n}.mp3" for n in FINAL_NAMES}
     stem_mp3 = {f"{s}.mp3" for s in SOURCE_STEMS} - final_mp3  # vocals.mp3 是最终产物
+    legacy_mp3 = {f"{n}.mp3" for n in LEGACY_OUTPUT_NAMES}     # 历史成品，现已不生成
     removed: list[str] = []
     for p in list(stems_dir.iterdir()):
         if p.is_dir():
@@ -116,6 +117,7 @@ def _cleanup_intermediates(stems_dir: Path) -> list[str]:
             continue
         if (p.suffix.lower() == ".wav"
                 or name in stem_mp3
+                or name in legacy_mp3
                 or name in ("encode-report.json", "karaoke-compare.json", "karaoke-mix.json")
                 or any(name.startswith(pref) for pref in EXPERIMENTAL_PREFIXES)):
             try:
@@ -125,7 +127,50 @@ def _cleanup_intermediates(stems_dir: Path) -> list[str]:
     return removed
 
 
-def _write_back(args, stems_dir: Path, final_files: dict[str, Path], total_mb: float, duration_s: float | None = None) -> None:
+def measure_and_store_loudness(spotify_id: str | None, accompaniment: Path) -> None:
+    """成片后顺手测一次伴奏响度（LUFS / True Peak），写进曲库。
+
+    **不改动音频文件**：只测量。播放端的增益补偿是前端 Web Audio 实时做的，
+    所以这里既不重新编码、也不落新的音频副本。
+
+    失败不能让 finalize 失败 —— 响度只是"锦上添花"，    2 个 MP3 已经生成好了，
+    因为测不了响度就把整首歌判成失败是得不偿失的。
+    """
+    if not spotify_id:
+        return
+    try:
+        import measure_loudness as loudness_mod
+    except Exception as error:
+        print(f"[!] 跳过响度测量：无法加载 measure_loudness（{error}）")
+        return
+    try:
+        values = loudness_mod.measure(accompaniment)
+    except Exception as error:
+        print(f"[!] 响度测量失败（不影响成片）：{str(error)[:160]}")
+        return
+    try:
+        import library
+
+        conn = library.init_db()
+        try:
+            library.update_loudness(conn, spotify_id, {
+                "lufs": values["lufs"],
+                "true_peak_dbfs": values["truePeakDbfs"],
+                "lra": values["lra"],
+                "version": loudness_mod.LOUDNESS_VERSION,
+                "source": accompaniment.name,
+            }, force=True)
+        finally:
+            conn.close()
+        tp = values.get("truePeakDbfs")
+        print(f"[+] 伴奏响度 {values['lufs']} LUFS"
+              + (f" · True Peak {tp} dBFS" if tp is not None else "")
+              + "（已写回曲库，播放时自动均衡）")
+    except Exception as error:
+        print(f"[!] 响度写库失败（不影响成片）：{str(error)[:160]}")
+
+
+def _write_back(args, stems_dir: Path, final_files: dict[str, Path], total_mb: float, duration_s: float | None = None, remeasure: bool = False) -> None:
     """把 4 个最终 MP3 的路径写回曲库。
 
     只写 finalize 自己负责的字段（vocals_path / no_vocals_path / out_dir），
@@ -149,8 +194,11 @@ def _write_back(args, stems_dir: Path, final_files: dict[str, Path], total_mb: f
         "input_duration_s": round(duration_s, 2) if duration_s else None,
         "processing_s": None, "rtf": None,
     })
-    library.log_job(conn, t["id"], "finalize", "ok", f"4 mp3, {total_mb} MB", None)
+    library.log_job(conn, t["id"], "finalize", "ok", f"2 mp3, {total_mb} MB", None)
     print("[+] 已写回曲库（vocals_path / no_vocals_path）")
+    # 只有真的重新编码过音频才重测响度；复用旧产物时跳过（一次 ffmpeg 分析要好几秒）
+    if remeasure:
+        measure_and_store_loudness(args.spotify_id, final_files["accompaniment"])
 
 
 def main() -> int:
@@ -159,7 +207,6 @@ def main() -> int:
     ap.add_argument("--stems-dir", default=None)
     ap.add_argument("--model", default="htdemucs")
     ap.add_argument("--bitrate", default="320k")
-    ap.add_argument("--guide-db", type=float, default=-12.0, help="引导版人声增益 dB")
     ap.add_argument("--keep-intermediate", action="store_true", help="保留 4 轨 WAV 和实验文件")
     args = ap.parse_args()
 
@@ -204,7 +251,7 @@ def main() -> int:
     if (not args.keep_intermediate and not stale
             and all(p.exists() and p.stat().st_size > 1024 for p in final_files.values())):
         total = sum(p.stat().st_size for p in final_files.values()) / 1024 / 1024
-        print("[=] 4 个最终产物已存在，跳过编码")
+        print("[=] 2 个最终产物已存在，跳过编码")
         removed = _cleanup_intermediates(stems_dir)
         if removed:
             print(f"[=] 顺带清理了 {len(removed)} 个残留中间文件: {', '.join(sorted(removed)[:8])}")
@@ -297,22 +344,15 @@ def main() -> int:
         accompaniment = accompaniment * unity_gain
         vocals = vocals * unity_gain
         original = original * unity_gain
-        # guide 用缩放后的伴奏/人声重新计算，保证与其它轨同基准
-        guide = accompaniment + vocals * db_to_linear(args.guide_db)
 
-        guide_peak = float(np.abs(guide).max())
-        if guide_peak > TARGET_PEAK:
-            # 引导人声叠上去又超了，只对 guide 单独再压一次（不影响其它轨比例）
-            guide = guide * (TARGET_PEAK / guide_peak)
-            # 缩放后重新测量，否则 manifest 里记的是压限前的旧值
-            guide_peak = float(np.abs(guide).max())
         original_peak = float(np.abs(original).max())
 
+        # 只落 2 个成品：伴奏 + 人声。原唱 / 伴奏 / 人声导唱三种播放模式全部由
+        # 前端 Web Audio 实时混音（伴奏固定，人声走独立 GainNode，滑块 0~1 控制
+        # 人声强度：1.0 = 原唱、0 = 伴奏、~0.25(-12dB) = 人声导唱），不落预混成品。
         mixes = {
             "accompaniment": accompaniment,
             "vocals": vocals,
-            "guide": guide,
-            "original": original,
         }
 
         print(f"[i] 统一增益 {unity_gain:.4f}（定标基准 peak={base_peak:.4f}："
@@ -342,6 +382,31 @@ def main() -> int:
                 results[name] = {"mp3": info["path"], "mb": round(info["bytes"] / 1024 / 1024, 1)}
                 print(f"[+] {name}.mp3  {info['bytes'] / 1024 / 1024:.1f} MB")
 
+        # ---- 先落 manifest + 写回曲库，最后才清理中间产物 ----
+        # 顺序很重要：清理 4 轨 WAV 是不可逆的。如果先删后写 manifest，
+        # 进程恰好在这中间被杀（或 safe-delete 拦截），重跑时就会：
+        #   stems 表有记录 → separate 跳过 → finalize 找不到 bass.wav → rc=3。
+        # manifest 是"这 2 个 MP3 已完成"的唯一凭据，必须在删除前落盘。
+        manifest = {
+            "spotifyId": args.spotify_id,
+            "stemsDir": str(stems_dir),
+            "sampleRate": sr,
+            "durationS": round(duration_s, 2),
+            "algorithmVersion": ALGORITHM_VERSION,
+            "bitrate": args.bitrate,
+            "peak": {"original": round(original_peak, 3)},
+            "files": results,
+            "totalMB": round(total_bytes / 1024 / 1024, 1),
+        }
+        (stems_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        try:
+            _write_back(args, stems_dir, {n: Path(results[n]["mp3"]) for n in FINAL_NAMES},
+                        manifest["totalMB"], duration_s, remeasure=True)
+        except Exception as error:  # noqa: BLE001
+            # 两个 MP3 已经编码成功；写库失败不能反过来把成品判成失败，
+            # 重跑 finalize 的快路径会再尝试写回。
+            print(f"[!] 写入曲库失败（成品 MP3 已生成，重跑可修复）：{error}")
+
         # ---- 清理中间产物 ----
         if not args.keep_intermediate:
             removed = _cleanup_intermediates(stems_dir)
@@ -351,24 +416,6 @@ def main() -> int:
                 p.unlink()
             tmp_dir.rmdir()
             print("[i] 保留中间产物（--keep-intermediate）")
-
-    # ---- 写回曲库 ----
-    manifest = {
-        "spotifyId": args.spotify_id,
-        "stemsDir": str(stems_dir),
-        "sampleRate": sr,
-        "durationS": round(duration_s, 2),
-        "algorithmVersion": ALGORITHM_VERSION,
-        "guideDb": args.guide_db,
-        "bitrate": args.bitrate,
-        "peak": {"guide": round(guide_peak, 3), "original": round(original_peak, 3)},
-        "files": results,
-        "totalMB": round(total_bytes / 1024 / 1024, 1),
-    }
-    (stems_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-
-    _write_back(args, stems_dir, {n: Path(results[n]["mp3"]) for n in FINAL_NAMES},
-                manifest["totalMB"], duration_s)
 
     print("\n=== 最终产物 ===")
     for name in FINAL_NAMES:
