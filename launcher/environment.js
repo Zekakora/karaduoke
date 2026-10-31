@@ -372,6 +372,73 @@ function warmModels(root, config, timeoutMs = 10 * 60 * 1000) {
 }
 
 /**
+ * 便携版 Node.js 所在目录（发行版自带 runtime\node\）。
+ *
+ * 存在的意义：把发行版拷到一台「没装 Node.js」的电脑上时，服务子进程、
+ * 以及 Python 脚本里通过 `node` 调起的辅助进程，都应该命中项目自带的这一份，
+ * 而不是报 ENOENT 或误用别的版本。返回空字符串表示没有便携版（走系统 PATH）。
+ */
+function portableNodeDir(root) {
+  const dir = path.join(root, 'runtime', 'node');
+  const exe = path.join(dir, process.platform === 'win32' ? 'node.exe' : 'node');
+  try {
+    return fs.existsSync(exe) ? dir : '';
+  } catch {
+    return '';
+  }
+}
+
+/** 便携版 node.exe 的完整路径；没有则返回空字符串 */
+function portableNodeExe(root) {
+  const dir = portableNodeDir(root);
+  if (!dir) return '';
+  return path.join(dir, process.platform === 'win32' ? 'node.exe' : 'node');
+}
+
+/**
+ * 决定用哪个 node 可执行文件，顺序与 start.cmd / start.vbs 保持一致：
+ *   1. 系统安装的 Node.js（PATH 里能找到的 node）
+ *   2. 项目自带的便携版（runtime\node）
+ *   3. 当前进程自己的 node（process.execPath）—— 最后兜底
+ *
+ * 第 1 条优先是用户明确要求的：装了 Node 的机器就用系统那份，
+ * 避免同一台机器上出现两个 Node 版本、行为不一致。
+ *
+ * 注意：Windows 的 App Execution Alias（例如
+ * %LOCALAPPDATA%\Microsoft\WindowsApps\node.exe）在没装 Node 时也会
+ * 「存在」但一运行就失败。这里用 spawnSync --version 实际验证一次，
+ * 验证不过就继续往后找，避免把服务起在某个人没法用的壳上。
+ */
+function isUsableNodeExe(exe) {
+  try {
+    if (!fs.existsSync(exe)) return false;
+    const { spawnSync } = require('child_process');
+    const probe = spawnSync(exe, ['--version'], { timeout: 5000, windowsHide: true });
+    return probe.status === 0;
+  } catch {
+    return false;
+  }
+}
+
+function resolveNodeBinary(root) {
+  const exeName = process.platform === 'win32' ? 'node.exe' : 'node';
+
+  // 1. 系统 PATH —— 找到第一个真正能跑的
+  const dirs = String(process.env.PATH || '').split(path.delimiter).filter(Boolean);
+  for (const dir of dirs) {
+    const candidate = path.join(dir, exeName);
+    if (isUsableNodeExe(candidate)) return candidate;
+  }
+
+  // 2. 便携版
+  const portable = portableNodeExe(root);
+  if (portable && isUsableNodeExe(portable)) return portable;
+
+  // 3. 兜底：既然控制面板已经跑起来了，它自己的解释器一定可用
+  return process.execPath;
+}
+
+/**
  * 生成「在新机器上从零装好 Python 环境」的批处理。
  *
  * 关键设计：**不要求新机器预装 Python**。
@@ -535,6 +602,9 @@ module.exports = {
   downloadFfmpeg,
   warmModels,
   setupScript,
+  portableNodeDir,
+  portableNodeExe,
+  resolveNodeBinary,
   CLOUDFLARED_URL,
   FFMPEG_ZIP_URL,
 };

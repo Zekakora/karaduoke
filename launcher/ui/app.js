@@ -611,6 +611,14 @@ async function act(path) {
     showNotice(error.message, 'error');
   } finally {
     state.localBusy = false;
+    // 关键：这里必须拉一次最新状态，而不是直接用 state.status 重绘。
+    // state.status 还是操作前的旧快照（例如上一次的 failed + 错误文本），
+    // 直接拿它 render 会把刚清掉的错误提示又画回来，表现为
+    // 「重启成功了，但上次的报错文字还挂在那里」。
+    try {
+      const fresh = await api('/api/status');
+      if (fresh) state.status = fresh;
+    } catch { /* 拉不到就用旧快照，至少不会白屏 */ }
     if (state.status) render(state.status);
   }
 }

@@ -99,6 +99,11 @@ class ServiceManager {
     const spotify = config.spotify || {};
     // 运行环境目录（Python / 模型缓存 / 二进制），由控制面板统一管理
     const envPaths = environment.resolve(this.store.root, config);
+    // 便携版 Node.js（发行版自带）。放进 PATH，让子进程里 `node`、
+    // 以及 Python 脚本通过 subprocess 调 node 时都能命中本项目自带的版本，
+    // 而不是依赖用户机器上装没装 Node。
+    const portableNodeDir = environment.portableNodeDir(this.store.root);
+    const pathParts = [portableNodeDir, envPaths.binDir, process.env.PATH || ''].filter(Boolean);
     const env = {
       ...process.env,
       PORT: String(port),
@@ -118,8 +123,9 @@ class ServiceManager {
       KARAOKE_FFPROBE: envPaths.ffprobe,
       TORCH_HOME: envPaths.torch,
       HF_HOME: envPaths.hf,
-      // 让 Python 里 shutil.which("ffmpeg") 也能命中 env\bin
-      PATH: envPaths.binDir + path.delimiter + (process.env.PATH || ''),
+      // 让 Python 里 shutil.which("ffmpeg") 也能命中 env\bin；
+      // 便携 Node 目录排在最前，保证子进程优先用项目自带的 node
+      PATH: pathParts.join(path.delimiter),
       PUBLIC_URL: '',
       INTERNAL_TOKEN: this.internalToken,
       // 告诉项目根的 main.js 加载哪个模式的工程（它自己也能从 cwd / 配置推断，这里是显式指定）
@@ -129,7 +135,14 @@ class ServiceManager {
     const child = (() => {
       try {
         const entry = this.resolveEntry();
-        return spawn(process.execPath, [entry], {
+        // 用哪个 node 启动服务，顺序与 start.cmd 保持一致：
+        //   1. 系统安装的 Node.js（PATH 里的 node）
+        //   2. 项目自带的便携版（runtime\node）
+        //   3. 当前正在运行控制面板的这个 node（process.execPath）
+        // 第 3 条是最后的兜底：既然控制面板已经跑起来了，用它自己
+        // 那个解释器一定起得来。
+        const nodeBin = environment.resolveNodeBinary(this.store.root);
+        return spawn(nodeBin, [entry], {
           cwd: this.root,
           env,
           windowsHide: true,
