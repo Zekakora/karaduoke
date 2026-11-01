@@ -64,6 +64,13 @@ mkdir "%STAGE%\logs" 2>nul
 mkdir "%STAGE%\karaoke_spo\data" 2>nul
 mkdir "%STAGE%\karaoke_ytb\data" 2>nul
 
+rem ---------- 5b. User-facing docs ----------
+rem 这两份文档放在 docs\ 下作为源文件，打进 zip 根目录方便用户直接看到。
+echo [5b] Copying docs...
+for %%d in (使用说明.md 环境部署指南.md) do (
+  if exist "docs\%%d" (copy /y "docs\%%d" "%STAGE%\%%d" >nul) else (echo   WARN missing docs\%%d)
+)
+
 rem ---------- 6. Bundled Node.js ----------
 echo [6/6] Bundling Node.js...
 set "NODE_SRC="
