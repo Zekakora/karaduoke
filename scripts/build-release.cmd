@@ -31,7 +31,7 @@ mkdir "%STAGE%" 2>nul
 
 rem ---------- 1. Top-level files ----------
 echo [1/6] Copying top-level files...
-for %%f in (main.js version.json start.cmd start.vbs setup-runtime.cmd README.md .gitignore) do (
+for %%f in (main.js version.json start.cmd start.vbs setup-runtime.cmd README.md README.zh-CN.md .gitignore) do (
   if exist "%%f" (copy /y "%%f" "%STAGE%\" >nul) else (echo   WARN missing %%f)
 )
 
