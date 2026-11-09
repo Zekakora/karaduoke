@@ -1,6 +1,26 @@
-# Karaduoke · 卡拉OK 现场系统
+﻿# Karaduoke · 卡拉OK 现场系统
 
 [English](README.md) · **中文**
+
+> [!CAUTION]
+> **本 README 由 AI 生成，仅供参考。**
+> 人工撰写的文档仍在攥写中。此处的说明可能不完整、已过时或不准确 ——
+> 实际使用时请以代码和配置文件为准。
+
+> [!WARNING]
+> **使用前必须填写你自己的 API 凭证。**
+> 位置是 `config\config.json`（首次启动时自动生成），也可以直接在控制面板「设置」里修改：
+>
+> | 字段 | 用途 | 填什么 |
+> | --- | --- | --- |
+> | `youtubeApiKey` | 模式 A 搜索（以及模式 B 的 MV 匹配） | 在 [Google Cloud Console](https://console.cloud.google.com/) 申请的 YouTube Data API v3 密钥 |
+> | `spotify.clientId`<br>`spotify.clientSecret`<br>`spotify.redirectUri` | 模式 B 曲库管理 | 你在 [Spotify Developer Dashboard](https://developer.spotify.com/dashboard) 创建的应用凭证 |
+> | `spotify.refreshToken` | 模式 B 曲库管理 | 在控制面板点「登录 Spotify」授权后自动获得 |
+> | `djPassword` | DJ 控制台登录（`/admin`） | 自行设定；首次启动会生成随机密码 |
+>
+> 不填 `youtubeApiKey`，模式 A 搜索不到任何结果。
+> 不填 Spotify 凭证，模式 B 无法搜索或导入歌曲。
+> **切勿把 `config\config.json` 提交到版本库** —— 它已在 `.gitignore` 中。
 
 双模式卡拉OK系统，两个版本**完全独立**，可各自单独使用，也可由统一控制面板切换。
 
@@ -145,36 +165,6 @@ karaoke_ytb\
 歌词库里若只有行级版本，而请求要逐字，会在**后台**联网升级一次（不阻塞当前播放，
 先把库里那份返回）；拿到逐字且行数合理（≥8 行）才替换，避免错误匹配把好歌词覆盖掉。
 升级成功后写入覆盖表并刷新缓存，下次播放自动使用逐字版。
-
----
-
-## 常见问题
-
-**Q：点歌后一直显示「处理中」？**
-新歌需要下载 + Demucs 分离，一首约 1–4 分钟（取决于时长和硬件）。
-大屏会显示「处理中…」，完成后自动开始播放。可在 DJ 控制台或曲库管理看详细进度。
-
-**Q：人声滑块没反应？**
-只有**本地曲目**（模式 B 的曲库歌）能调人声。YouTube 音轨是混好的，拆不开，
-所以模式 A 和 YouTube 曲目下这个滑块不显示。
-
-**Q：逐字歌词不生效？**
-检查那首歌的歌词源。右下角曲库管理里「歌词」列会显示 `逐字` 或 `行级`。
-网易云/lrclib 只有行级时间轴，不是所有歌都有逐字。
-DJ 控制台里「歌词逐字」按钮在这类歌上会置灰并提示。
-
-**Q：改了设置后播放回到原声？**
-人声强度现在会写回服务端并持久化，切歌/切画面/改设置都会保留。
-如果仍复现，硬刷新大屏页面（`Ctrl+Shift+R`）。
-
-**Q：控制面板点「启动服务」报错？**
-检查端口是否被占用。两个模式共用 3100，可在控制面板「设置」里改。
-
-**Q：YouTube 搜索失败（模式 A）？**
-检查 `config\config.json` 里的 `youtubeApiKey`，或配额是否用完。
-
-**Q：想让 cloudflared 穿透可用？**
-把 `cloudflared.exe` 放在项目根 `bin\`（也认 `karaoke_spo\bin\`），或在「设置」里填路径。
 
 ---
 
