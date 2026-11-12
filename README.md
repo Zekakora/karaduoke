@@ -75,6 +75,53 @@ panel under **Settings** (applies to both modes at once).
 
 ---
 
+## Screenshots
+
+Captured from a running **Mode B · Local library** instance (v0.4.0). Browser tabs,
+address bar and bookmarks are cropped out of the page screenshots; the originals live in `pic\`.
+
+### Control panel
+
+![Control panel](docs/screenshots/01-control-panel.png)
+
+One page to start / restart / stop the service, switch modes, open the display, manage the
+Python environment and edit credentials.
+
+### Display · official MV + two-line lyrics
+
+![Display in MV mode](docs/screenshots/03-display-mv.png)
+
+The muted official MV fills the screen with two-line lyrics on top; the right panel carries
+the "scan to sing" QR code and the up-next queue.
+
+### Display · Apple Music style + word-level lyrics
+
+![Display in lyrics mode](docs/screenshots/04-display-lyrics.png)
+
+Album art with word-by-word highlighting; vocal level and original / guide / instrumental
+switching are available right on the display.
+
+### DJ console
+
+![DJ console](docs/screenshots/05-dj-console.png)
+
+Playback, queue, vocal mixing, broadcasts and live session settings. The full console view:
+
+<details>
+<summary>Expand full DJ console</summary>
+
+![Full DJ console](docs/screenshots/06-dj-console-full.png)
+
+</details>
+
+### Guest request page
+
+![Guest request page](docs/screenshots/02-guest-join.png)
+
+Guests search the Spotify catalogue on their own phone and add songs to the public queue.
+
+---
+
 ## How the Two Modes Differ
 
 | | Mode A · karaoke_ytb | Mode B · karaoke_spo |

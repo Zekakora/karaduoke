@@ -66,6 +66,49 @@ Karaduoke\
 
 ---
 
+## 运行效果
+
+以下截图来自实际运行的 **模式 B · 本地曲库**（v0.4.0），页面截图已裁掉浏览器标签页、地址栏与书签栏，原图保存在 `pic\`。
+
+### 控制面板
+
+![控制面板](docs/screenshots/01-control-panel.png)
+
+启动 / 重启 / 停止服务、切换模式、打开大屏、管理 Python 环境、修改凭证，都在同一页完成。
+
+### 大屏 · 官方 MV + 两行歌词
+
+![大屏 MV 模式](docs/screenshots/03-display-mv.png)
+
+静音播放的官方 MV 铺满画面，叠加两行歌词；右侧是扫码点歌二维码和「下一首」队列。
+
+### 大屏 · 仿 Apple Music + 逐字歌词
+
+![大屏歌词模式](docs/screenshots/04-display-lyrics.png)
+
+专辑封面搭配逐字高亮歌词，大屏上还能直接调节人声比例与 原唱 / 引导 / 伴奏。
+
+### DJ 控制台
+
+![DJ 控制台](docs/screenshots/05-dj-console.png)
+
+播放控制、队列、人声混音、广播与现场设置。完整控制台长图：
+
+<details>
+<summary>展开完整 DJ 控制台</summary>
+
+![完整 DJ 控制台](docs/screenshots/06-dj-console-full.png)
+
+</details>
+
+### 观众点歌页
+
+![观众点歌页](docs/screenshots/02-guest-join.png)
+
+观众用自己的手机搜索 Spotify 曲库，自助把歌曲加入公共队列。
+
+---
+
 ## 两种模式的区别
 
 | | 模式 A · karaoke_ytb | 模式 B · karaoke_spo |
