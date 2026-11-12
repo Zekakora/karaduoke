@@ -78,7 +78,8 @@ panel under **Settings** (applies to both modes at once).
 ## Screenshots
 
 Captured from a running **Mode B · Local library** instance (v0.4.0). Browser tabs,
-address bar and bookmarks are cropped out of the page screenshots; the originals live in `pic\`.
+address bar and bookmarks are cropped out of the page screenshots; the un-cropped
+originals are kept locally and are not committed.
 
 ### Control panel
 

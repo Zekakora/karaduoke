@@ -65,3 +65,7 @@ rubbish/
 /karaoke_spo/data/
 /karaoke_spo/.env
 /karaoke_ytb/data/
+
+# ── 截图原图（含浏览器书签栏 / 内网地址，只在本地留存）────────────────
+# 入库的是 docs/screenshots/ 里裁掉浏览器顶栏后的版本。
+/pic/
